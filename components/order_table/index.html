@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --text: #202124;
+      --muted: #6b7280;
+      --border: #d9dde5;
+      --header: #f4f6f8;
+      --surface: #ffffff;
+      --hover: #f5f8fc;
+      --danger: #b42318;
+      --danger-hover: #fff1f0;
+      --focus: #1f6feb;
+      --geocoding-warning: #7a4a00;
+      --geocoding-error: #9d1f1f;
+    }
+    @media (prefers-color-scheme: dark) { :root { --geocoding-warning: #f0c44f; --geocoding-error: #ff7b72; } }
+    body { margin: 0; color: var(--text); background: var(--surface); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    #table { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 8px; overflow: hidden; }
+    #table.filter-open { overflow: visible; }
+    #scroll { max-height: 527px; overflow: auto; }
+    .row, .header { display: grid; grid-template-columns: var(--column-widths, max-content max-content max-content max-content max-content max-content minmax(220px, 1fr) 46px); min-width: 1050px; align-items: stretch; }
+    .header { position: sticky; top: 0; z-index: 2; color: var(--muted); background: var(--header); border-bottom: 1px solid var(--border); font-weight: 600; }
+    .cell { position: relative; min-width: 0; padding: 4px 5px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: visible; }
+    .cell.geocoding-warning input { color: var(--geocoding-warning); }
+    .cell.geocoding-error input { color: var(--geocoding-error); }
+    .header .cell { padding-top: 9px; padding-bottom: 9px; white-space: nowrap; }
+    .header .vehicle-header { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
+    .vehicle-header { position: relative; }
+    .header-controls { display: flex; flex: 0 0 auto; gap: 3px; align-items: center; }
+    #vehicle-filter-toggle, #vehicle-sort { height: 22px; padding: 1px 4px; font-size: 11px; line-height: 1; }
+    #vehicle-filter-toggle { flex: 0 0 auto; color: inherit; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-family: inherit; }
+    #vehicle-filter-toggle:hover, #vehicle-filter-toggle:focus { border-color: var(--focus); outline: none; }
+    .vehicle-filter-menu { position: absolute; top: calc(100% - 4px); left: 8px; z-index: 5; display: none; min-width: 170px; max-height: 220px; overflow: auto; padding: 4px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgb(0 0 0 / 18%); }
+    .vehicle-filter-menu.open { display: grid; gap: 2px; }
+    .vehicle-option { display: flex; gap: 7px; align-items: center; padding: 5px; border-radius: 3px; cursor: pointer; }
+    .vehicle-option:hover { background: var(--hover); }
+    .vehicle-option input { width: 14px; height: 14px; margin: 0; accent-color: var(--focus); }
+    #vehicle-sort { flex: 0 0 auto; color: inherit; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-family: inherit; }
+    #vehicle-sort:hover, #vehicle-sort:focus { border-color: var(--focus); outline: none; }
+    .cell:last-child { border-right: 0; }
+    .row:last-child .cell { border-bottom: 0; }
+    .row:hover { background: var(--hover); }
+    input, select { box-sizing: border-box; width: 100%; min-width: 0; height: 28px; padding: 3px 6px; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 4px; font: inherit; }
+    input[type="date"] { appearance: none; -webkit-appearance: none; padding-right: 6px; }
+    input[type="date"]::-webkit-calendar-picker-indicator { display: none; }
+    input:hover, select:hover, input:focus, select:focus { background: var(--surface); border-color: var(--focus); outline: none; }
+    input[readonly] { color: var(--text); cursor: default; }
+    .cell[data-full-value]::after { content: attr(data-full-value); position: absolute; left: 8px; right: 8px; top: calc(100% - 2px); z-index: 3; display: none; max-height: 160px; padding: 7px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgb(0 0 0 / 18%); white-space: normal; overflow-wrap: anywhere; }
+    .cell[data-full-value][data-overflow="true"]:hover::after, .cell[data-full-value][data-overflow="true"]:focus-within::after { display: block; }
+    .delete { display: grid; place-items: center; width: 28px; height: 28px; margin: 0 auto; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 16px; }
+    .delete:hover, .delete:focus { color: var(--danger); background: var(--danger-hover); outline: none; }
+    .empty { padding: 18px; color: var(--muted); text-align: center; }
+    @media (max-width: 700px) { #scroll { max-height: 494px; } }
+  </style>
+</head>
+<body>
+  <div id="table">
+    <div class="header">
+      <div class="cell">Termin bis</div><div class="cell">PLZ</div><div class="cell">Ort</div><div class="cell">Straße</div>
+      <div class="cell">Anzahl</div>
+      <div class="cell vehicle-header"><span>Fahrzeugart</span>
+        <div class="header-controls">
+          <button id="vehicle-filter-toggle" type="button" aria-label="Fahrzeugart filtern" aria-haspopup="true" aria-expanded="false">Filter</button>
+          <button id="vehicle-sort" type="button" title="Nach Fahrzeugart aufsteigend sortieren">A-Z</button>
+        </div>
+        <div id="vehicle-filter-menu" class="vehicle-filter-menu" role="group" aria-label="Fahrzeugarten filtern"></div>
+      </div>
+      <div class="cell">Hinweise</div><div class="cell" aria-label="Aktionen"></div>
+    </div>
+    <div id="scroll"><div id="rows"></div></div>
+  </div>
+  <script>
+    const state = { scrollTop: 0, actionId: Date.now(), rows: [], vehicleTypes: [], selectedVehicleTypes: null, vehicleSort: 0 };
+    const columns = ["Termin bis", "PLZ", "Ort", "Straße", "Anzahl", "Fahrzeugart", "Hinweise"];
+    const editable = new Set(["Termin bis", "Anzahl", "Fahrzeugart", "Hinweise"]);
+    const fixedColumns = columns.slice(0, -1);
+    const textMeasure = document.createElement("canvas").getContext("2d");
+
+    function valueText(value) {
+      return value == null ? "" : String(value);
+    }
+
+    function measureWidth(value, extra = 0) {
+      textMeasure.font = getComputedStyle(document.body).font;
+      return Math.ceil(textMeasure.measureText(valueText(value)).width) + extra;
+    }
+
+    function updateCellOverflow() {
+      document.querySelectorAll(".cell[data-full-value]").forEach((cell) => {
+        const input = cell.querySelector("input, select");
+        if (!input) return;
+        const styles = getComputedStyle(input);
+        textMeasure.font = styles.font;
+        const text = input instanceof HTMLSelectElement
+          ? input.selectedOptions[0]?.textContent || ""
+          : input.value;
+        const padding = parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+        const availableWidth = input.clientWidth - padding;
+        cell.dataset.overflow = String(textMeasure.measureText(text).width > availableWidth);
+      });
+    }
+
+    function setColumnWidths(rows) {
+      const compactColumns = new Set(["Termin bis", "PLZ"]);
+      const widths = fixedColumns.map((column) => {
+        const headerPadding = compactColumns.has(column) ? 11 : 42;
+        const headerWidth = measureWidth(column, headerPadding + (column === "Fahrzeugart" ? 80 : 0));
+        const contentPadding = compactColumns.has(column) ? 25 : 42;
+        const controlExtra = column === "Fahrzeugart" ? 48 : 0;
+        const contentWidth = Math.max(...rows.map((row) => measureWidth(row[column], contentPadding + controlExtra)), 0);
+        return `${Math.max(headerWidth, contentWidth)}px`;
+      });
+      widths.push("minmax(220px, 1fr)", "46px");
+      const template = widths.join(" ");
+      document.getElementById("table").style.setProperty("--column-widths", template);
+    }
+
+    function send(value) {
+      window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue", value, dataType: "json" }, "*");
+    }
+
+    function setFrameHeight() {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setFrameHeight",
+        height: 570,
+      }, "*");
+    }
+
+    function renderVehicleFilterOptions() {
+      const menu = document.getElementById("vehicle-filter-menu");
+      menu.replaceChildren();
+      state.vehicleTypes.forEach((vehicleType) => {
+        const label = document.createElement("label");
+        label.className = "vehicle-option";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = vehicleType;
+        checkbox.checked = state.selectedVehicleTypes.has(vehicleType);
+        checkbox.addEventListener("change", () => {
+          state.selectedVehicleTypes = new Set(
+            [...menu.querySelectorAll("input:checked")].map((option) => option.value),
+          );
+          render({ rows: state.rows, vehicle_types: state.vehicleTypes.slice(0, -1) });
+        });
+        const text = document.createElement("span");
+        text.textContent = vehicleType || "Nicht zugewiesen";
+        label.append(checkbox, text);
+        menu.append(label);
+      });
+      const allSelected = state.selectedVehicleTypes.size === state.vehicleTypes.length;
+      const toggle = document.getElementById("vehicle-filter-toggle");
+      toggle.textContent = "Filter";
+      toggle.title = allSelected ? "Alle Fahrzeugarten ausgewählt" : `${state.selectedVehicleTypes.size} von ${state.vehicleTypes.length} ausgewählt`;
+      toggle.setAttribute("aria-label", `Fahrzeugart filtern, ${toggle.title}`);
+      toggle.setAttribute("aria-expanded", String(menu.classList.contains("open")));
+    }
+
+    function cellInput(row, column) {
+      const input = document.createElement(column === "Fahrzeugart" ? "select" : "input");
+      if (column === "Termin bis") input.type = "date";
+      if (column === "Anzahl") { input.type = "number"; input.step = "100"; }
+      input.value = row[column] || "";
+      if (column === "Termin bis") input.addEventListener("click", () => input.showPicker?.());
+      if (column === "Fahrzeugart") {
+        ["", "Sattelzug", "Dreiachser"].forEach((value) => {
+          const option = document.createElement("option"); option.value = value; option.textContent = value || "Keine Auswahl"; input.append(option);
+        });
+        input.value = row[column] || "";
+      }
+      input.addEventListener("change", () => send({ type: "edit", row: row.row_index, column, value: input.value, action_id: ++state.actionId }));
+      return input;
+    }
+
+    function render(args) {
+      const scroll = document.getElementById("scroll");
+      state.scrollTop = scroll.scrollTop;
+      state.rows = args.rows || [];
+      state.vehicleTypes = [...new Set((args.vehicle_types || []).map(valueText)), ""];
+      if (state.selectedVehicleTypes === null) {
+        state.selectedVehicleTypes = new Set(state.vehicleTypes);
+      } else {
+        state.selectedVehicleTypes = new Set(
+          state.vehicleTypes.filter((vehicleType) => state.selectedVehicleTypes.has(vehicleType)),
+        );
+      }
+      const rows = document.getElementById("rows");
+      rows.replaceChildren();
+      setColumnWidths(state.rows);
+      renderVehicleFilterOptions();
+      const showAllVehicleTypes = state.selectedVehicleTypes.size === state.vehicleTypes.length;
+      const visibleRows = state.rows.filter((row) => {
+        return showAllVehicleTypes || state.selectedVehicleTypes.has(valueText(row["Fahrzeugart"]));
+      });
+      if (state.vehicleSort) {
+        visibleRows.sort((left, right) => {
+          const comparison = valueText(left["Fahrzeugart"]).localeCompare(valueText(right["Fahrzeugart"]), "de", { sensitivity: "base" });
+          return comparison === 0 ? left.row_index - right.row_index : comparison * state.vehicleSort;
+        });
+      }
+      visibleRows.forEach((row) => {
+        const element = document.createElement("div");
+        element.className = "row";
+        columns.forEach((column) => {
+          const cell = document.createElement("div"); cell.className = "cell";
+          if (row["Geocodierungsstatus"] === "street_fallback" && column === "Straße") cell.classList.add("geocoding-warning");
+          if (row["Geocodierungsstatus"] === "not_found" && ["PLZ", "Ort", "Straße"].includes(column)) cell.classList.add("geocoding-error");
+          const fullValue = valueText(row[column]);
+          if (fullValue) cell.dataset.fullValue = fullValue;
+          if (editable.has(column)) cell.append(cellInput(row, column));
+          else { const input = document.createElement("input"); input.value = row[column] || ""; input.readOnly = true; cell.append(input); }
+          element.append(cell);
+        });
+        const actionCell = document.createElement("div"); actionCell.className = "cell";
+        const button = document.createElement("button"); button.className = "delete"; button.type = "button"; button.title = "Auftrag löschen"; button.setAttribute("aria-label", "Auftrag löschen"); button.innerHTML = "&#128465;";
+        button.addEventListener("click", () => send({ type: "delete", row: row.row_index, action_id: ++state.actionId }));
+        actionCell.append(button); element.append(actionCell); rows.append(element);
+      });
+      if (!visibleRows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = state.rows.length ? "Keine Aufträge entsprechen dem Fahrzeugart-Filter." : "Keine Aufträge vorhanden."; rows.append(empty); }
+      requestAnimationFrame(() => {
+        scroll.scrollTop = state.scrollTop;
+        updateCellOverflow();
+        setFrameHeight();
+      });
+    }
+
+    const vehicleFilterToggle = document.getElementById("vehicle-filter-toggle");
+    const vehicleFilterMenu = document.getElementById("vehicle-filter-menu");
+    const table = document.getElementById("table");
+    window.addEventListener("resize", updateCellOverflow);
+    function setVehicleFilterOpen(open) {
+      vehicleFilterMenu.classList.toggle("open", open);
+      table.classList.toggle("filter-open", open);
+      vehicleFilterToggle.setAttribute("aria-expanded", String(open));
+    }
+    vehicleFilterToggle.addEventListener("click", () => {
+      setVehicleFilterOpen(!vehicleFilterMenu.classList.contains("open"));
+    });
+    document.addEventListener("click", (event) => {
+      const eventPath = event.composedPath();
+      if (!eventPath.includes(vehicleFilterMenu) && !eventPath.includes(vehicleFilterToggle)) {
+        setVehicleFilterOpen(false);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        setVehicleFilterOpen(false);
+        vehicleFilterToggle.focus();
+      }
+    });
+    document.getElementById("vehicle-sort").addEventListener("click", (event) => {
+      state.vehicleSort = state.vehicleSort === 1 ? -1 : 1;
+      event.currentTarget.textContent = state.vehicleSort === 1 ? "A-Z" : "Z-A";
+      event.currentTarget.title = state.vehicleSort === 1 ? "Aufsteigend sortiert" : "Absteigend sortiert";
+      render({ rows: state.rows, vehicle_types: state.vehicleTypes.slice(0, -1) });
+    });
+
+    window.addEventListener("message", (event) => {
+      if (event.data.type === "streamlit:render") render(event.data.args || {});
+    });
+    window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+    setFrameHeight();
+  </script>
+</body>
+</html>

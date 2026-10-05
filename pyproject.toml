@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autotourenplaner"
+version = "0.1.0"
+description = "Streamlit prototype for the Autotourenplaner"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2,<4",
+    "openpyxl>=3.1,<4",
+    "folium>=0.18,<1",
+    "streamlit>=1.40,<2",
+    "streamlit-folium>=0.23,<1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.pyright]
+extraPaths = ["."]
+
+[tool.setuptools.packages.find]
+where = ["."]

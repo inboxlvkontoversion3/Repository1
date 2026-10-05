@@ -1,0 +1,50 @@
+Metadata-Version: 2.4
+Name: autotourenplaner
+Version: 0.1.0
+Summary: Streamlit prototype for the Autotourenplaner
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pandas<4,>=2.2
+Requires-Dist: openpyxl<4,>=3.1
+Requires-Dist: streamlit<2,>=1.40
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8; extra == "test"
+
+# Autotourenplaner
+
+A Streamlit prototype for planning car tours, with a German user interface and English project internals.
+
+## Requirements
+
+- Python 3.11 or newer
+- A virtual environment is recommended
+
+## Installation
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+```
+
+## Start the application
+
+```bash
+streamlit run app.py
+```
+
+The application includes these pages:
+
+- Grundparameter
+- Aufträge
+- Tourenbildung
+- Reihenfolge
+- Einstellungen
+
+The base-parameter page loads `Verladestellen.xlsx` and stores the selected loading point in `.autotourenplaner/settings.json`. Order import, routing, tour formation, and route optimization are not implemented yet.
+
+## Tests
+
+```bash
+pytest
+```

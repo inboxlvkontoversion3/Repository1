@@ -1,0 +1,3 @@
+{
+  "tests/test_project.py::test_order_table_date_uses_streamlit_date_input": true
+}

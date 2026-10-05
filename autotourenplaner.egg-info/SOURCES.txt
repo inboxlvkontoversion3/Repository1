@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+autotourenplaner.egg-info/PKG-INFO
+autotourenplaner.egg-info/SOURCES.txt
+autotourenplaner.egg-info/dependency_links.txt
+autotourenplaner.egg-info/requires.txt
+autotourenplaner.egg-info/top_level.txt
+pages/01_Grundparameter.py
+pages/02_Aufträge.py
+pages/03_Tourenbildung.py
+pages/04_Reihenfolge.py
+pages/05_Einstellungen.py
+tests/test_project.py

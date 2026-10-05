@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <script>
+    const componentState = { order: [], pinned: [], dragged: null, dropTarget: null, pointerId: null, dragItem: null };
+
+    function sendAction(type, pointIndex) {
+      const value = {
+        type,
+        order: componentState.order,
+        pinned: componentState.pinned,
+        action_id: Date.now(),
+      };
+      if (pointIndex !== undefined) value.point_index = pointIndex;
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setComponentValue",
+        value,
+        dataType: "json",
+      }, "*");
+    }
+
+    function setFrameHeight() {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: "streamlit:setFrameHeight",
+        height: document.documentElement.scrollHeight,
+      }, "*");
+    }
+
+    function applyTheme(theme) {
+      if (!theme) return;
+      const root = document.documentElement;
+      root.style.setProperty("--component-text-color", theme.textColor || "#222");
+      root.style.setProperty("--component-background-color", theme.backgroundColor || "#fff");
+      root.style.setProperty("--component-secondary-background-color", theme.secondaryBackgroundColor || theme.backgroundColor || "#f5f5f5");
+      root.style.setProperty("--component-primary-color", theme.primaryColor || "#1d4ed8");
+    }
+
+    function clearDropPreview() {
+      document.querySelector(".drop-indicator")?.remove();
+      document.querySelectorAll(".drop-highlight").forEach((row) => row.classList.remove("drop-highlight"));
+      componentState.dropTarget = null;
+    }
+
+    function setDropPreview(target) {
+      if (
+        componentState.dropTarget
+        && JSON.stringify(componentState.dropTarget) === JSON.stringify(target)
+      ) return;
+      clearDropPreview();
+      componentState.dropTarget = target;
+      const targetRow = document.querySelector(`[data-point-index="${target.pointIndex}"]`);
+      if (!targetRow) return;
+      if (target.type === "swap") {
+        targetRow.classList.add("drop-highlight");
+        return;
+      }
+      const indicator = document.createElement("div");
+      indicator.className = "drop-indicator";
+      indicator.style.top = target.position === "before" ? "0" : "calc(100% - 3px)";
+      targetRow.append(indicator);
+    }
+
+    function dropTargetAt(y) {
+      const rows = [...document.querySelectorAll(".route-row")];
+      for (const row of rows) {
+        const bounds = row.getBoundingClientRect();
+        const pointIndex = Number(row.dataset.pointIndex);
+        if (y < bounds.top) return { type: "insert", position: "before", pointIndex };
+        if (y <= bounds.top + bounds.height * 0.25) {
+          return { type: "insert", position: "before", pointIndex };
+        }
+        if (y < bounds.bottom - bounds.height * 0.25) {
+          return { type: "swap", pointIndex };
+        }
+        if (y <= bounds.bottom) return { type: "insert", position: "after", pointIndex };
+      }
+      const lastRow = rows[rows.length - 1];
+      return lastRow
+        ? { type: "insert", position: "after", pointIndex: Number(lastRow.dataset.pointIndex) }
+        : null;
+    }
+
+    function applyDrop() {
+      const target = componentState.dropTarget;
+      const dragged = componentState.dragged;
+      if (dragged === null || !target || dragged === target.pointIndex) return;
+      const order = [...componentState.order];
+      const from = order.indexOf(dragged);
+      const targetIndex = order.indexOf(target.pointIndex);
+      if (from < 0 || targetIndex < 0) return;
+      if (target.type === "swap") {
+        [order[from], order[targetIndex]] = [order[targetIndex], order[from]];
+      } else {
+        order.splice(from, 1);
+        const insertionIndex = order.indexOf(target.pointIndex) + (target.position === "after" ? 1 : 0);
+        order.splice(insertionIndex, 0, dragged);
+      }
+      componentState.order = order;
+      sendAction("drag");
+    }
+
+    function handleDragOver(event) {
+      if (componentState.dragged === null) return;
+      event.preventDefault();
+      const target = dropTargetAt(event.clientY);
+      if (target && target.pointIndex !== componentState.dragged) setDropPreview(target);
+      else clearDropPreview();
+    }
+
+    function beginPointerDrag(event, item, pointIndex) {
+      if (event.button !== 0 || event.target.closest(".pin-button, .info-button")) return;
+      event.preventDefault();
+      componentState.dragged = pointIndex;
+      componentState.pointerId = event.pointerId;
+      componentState.dragItem = item;
+      item.classList.add("dragging");
+      item.setPointerCapture(event.pointerId);
+    }
+
+    function movePointerDrag(event) {
+      if (componentState.dragged === null || event.pointerId !== componentState.pointerId) return;
+      event.preventDefault();
+      handleDragOver(event);
+    }
+
+    function finishPointerDrag(event) {
+      if (componentState.dragged === null || event.pointerId !== componentState.pointerId) return;
+      event.preventDefault();
+      applyDrop();
+      componentState.dragItem?.classList.remove("dragging");
+      try { componentState.dragItem?.releasePointerCapture(event.pointerId); } catch (error) {}
+      componentState.dragged = null;
+      componentState.pointerId = null;
+      componentState.dragItem = null;
+      clearDropPreview();
+    }
+
+    function render(args) {
+      const rows = args.rows || [];
+      componentState.order = (args.order || []).map(Number);
+      componentState.pinned = (args.pinned || []).map(Number);
+      componentState.dragged = null;
+      componentState.pointerId = null;
+      componentState.dragItem = null;
+      clearDropPreview();
+      const list = document.getElementById("route-list");
+      list.replaceChildren();
+      rows.forEach((row) => {
+        const item = document.createElement("div");
+        item.className = "route-row";
+        item.draggable = false;
+        item.dataset.pointIndex = row.point_index;
+        item.innerHTML = `
+          <button class="info-button" title="Auftragsdetails" aria-label="Auftragsdetails">i</button>
+          <button class="pin-button${componentState.pinned.includes(Number(row.point_index)) ? " pinned" : ""}" title="Stopp fixieren" aria-label="Stopp fixieren">&#128204;</button>
+          <span class="pos"></span><span class="sep">|</span>
+          <span class="date"></span><span class="sep">|</span><span class="qty"></span><span class="sep">|</span>
+          <span class="rest"></span>`;
+        const stopNumber = componentState.order.indexOf(Number(row.point_index)) + 2;
+        item.querySelector(".pos").textContent = `${stopNumber}.`;
+        item.querySelector(".date").textContent = row.deadline || "";
+        item.querySelector(".qty").textContent = row.quantity ? `${row.quantity}l` : "";
+        item.querySelector(".rest").textContent = row.rest || "";
+        item.querySelector(".info-button").addEventListener("click", (event) => {
+          event.stopPropagation();
+          sendAction("info", Number(row.point_index));
+        });
+        item.querySelector(".pin-button").addEventListener("click", (event) => {
+          event.stopPropagation();
+          const pointIndex = Number(row.point_index);
+          if (componentState.pinned.includes(pointIndex)) {
+            componentState.pinned = componentState.pinned.filter((value) => value !== pointIndex);
+          } else {
+            componentState.pinned = [...componentState.pinned, pointIndex];
+          }
+          sendAction("pin", pointIndex);
+        });
+        item.addEventListener("pointerdown", (event) => beginPointerDrag(event, item, Number(row.point_index)));
+        list.appendChild(item);
+      });
+      requestAnimationFrame(setFrameHeight);
+    }
+
+    window.addEventListener("pointermove", movePointerDrag);
+    window.addEventListener("pointerup", finishPointerDrag);
+    window.addEventListener("pointercancel", finishPointerDrag);
+
+    window.addEventListener("message", (event) => {
+      if (event.data.type === "streamlit:render") {
+        applyTheme(event.data.theme);
+        render(event.data.args || {});
+      }
+    });
+    window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+  </script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --component-text-color: #222;
+      --component-background-color: #fff;
+      --component-secondary-background-color: #f5f5f5;
+      --component-primary-color: #1d4ed8;
+    }
+    body { margin: 0; font: 14px sans-serif; color: var(--component-text-color); background: var(--component-background-color); }
+    #route-list { display: flex; flex-direction: column; gap: 0.12rem; padding-bottom: 3px; }
+    .route-row { position: relative; display: grid; grid-template-columns: 1.7rem 1.7rem 3.1ch 0.8ch 10ch 0.8ch 5.5ch 0.8ch minmax(0, 1fr); align-items: center; column-gap: 0.15ch; white-space: nowrap; line-height: 1.5; padding: 2px 0; cursor: grab; }
+    .route-row { touch-action: none; user-select: none; }
+    .route-row.dragging { opacity: 0.4; }
+    .route-row.drop-highlight { background: var(--component-secondary-background-color); box-shadow: inset 0 2px 0 var(--component-primary-color), inset 0 -2px 0 var(--component-primary-color); }
+    .drop-indicator { position: absolute; left: 0; right: 0; z-index: 2; display: block; width: 100%; height: 3px; min-height: 3px; max-height: 3px; box-sizing: border-box; border-radius: 2px; background: var(--component-primary-color); pointer-events: none; }
+    .route-row > span { overflow: hidden; text-overflow: ellipsis; }
+    .pos { font-weight: 700; }
+    .sep { color: #666; }
+    .pin-button { width: 1.7rem; height: 1.7rem; border: 0; border-radius: 4px; background: transparent; color: #888; cursor: pointer; font-size: 0.9rem; opacity: 0.45; }
+    .pin-button:hover, .pin-button.pinned { background: var(--component-secondary-background-color); color: var(--component-primary-color); opacity: 1; }
+    .info-button { width: 1.45rem; height: 1.45rem; padding: 0; border: 1px solid #888; border-radius: 50%; background: transparent; color: #888; cursor: pointer; font: 700 0.7rem sans-serif; opacity: 0.75; }
+    .info-button:hover { border-color: var(--component-primary-color); color: var(--component-primary-color); opacity: 1; }
+  </style>
+</head>
+<body><div id="route-list"></div></body>
+</html>

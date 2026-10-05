@@ -1,0 +1,6 @@
+pandas<4,>=2.2
+openpyxl<4,>=3.1
+streamlit<2,>=1.40
+
+[test]
+pytest<9,>=8
