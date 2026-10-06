@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from config import has_valid_selected_vehicle, load_settings
+from profiles import get_profile_paths
 from order_table import order_table
 from order_import import (
 	ORDER_COLUMNS,
@@ -26,12 +27,14 @@ from order_import import (
 )
 
 
-settings_path = Path(__file__).resolve().parents[1] / ".autotourenplaner" / "settings.json"
+project_root = Path(__file__).resolve().parents[1]
+profile_paths = get_profile_paths(project_root, st.session_state["active_profile_id"])
+settings_path = profile_paths.settings
 if not has_valid_selected_vehicle(load_settings(settings_path)):
 	st.warning("Die Kapazität des ausgewählten Fahrzeugtyps muss eine natürliche Zahl sein.")
 	st.stop()
 
-orders_path = Path(__file__).resolve().parents[1] / "data" / "Aufträge.xlsx"
+orders_path = profile_paths.orders
 orders = normalize_order_postal_codes(load_orders(orders_path))
 country_codes_changed = normalize_order_countries(orders)
 if normalize_order_dates(orders):
@@ -48,9 +51,6 @@ st.markdown(
 	<style>
 	.block-container {
 		padding-bottom: 0.5rem !important;
-	}
-	.st-key-orders_table_component {
-		margin-bottom: -26px !important;
 	}
 	[data-testid="stExpander"] summary {
 		padding: 2px 10px;
@@ -105,7 +105,7 @@ with st.expander("Aufträge aus Export importieren", expanded=True):
 			except (ValueError, OSError, TimeoutError) as error:
 				st.error(f"Import fehlgeschlagen: {error}")
 
-@st.fragment(key="orders_table")
+@st.fragment(key=f"orders_table_{st.session_state['active_profile_id']}")
 def render_orders_table() -> pd.DataFrame:
 	orders = normalize_order_postal_codes(load_orders(orders_path))
 	normalize_order_countries(orders)
@@ -141,7 +141,7 @@ def render_orders_table() -> pd.DataFrame:
 	component_action = order_table(
 		rows=component_rows,
 		vehicle_types=vehicle_types,
-		key="orders_table_component",
+		key=f"orders_table_component_{st.session_state['active_profile_id']}",
 		default=None,
 	)
 

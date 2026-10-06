@@ -5,12 +5,16 @@ from pathlib import Path
 import streamlit as st
 
 from config import load_settings, save_settings
+from profiles import get_profile_paths
 
 
 st.title("Einstellungen")
 st.write("Hier werden spaeter allgemeine Anwendungseinstellungen verwaltet.")
 
-settings_path = Path(__file__).resolve().parents[1] / ".autotourenplaner" / "settings.json"
+settings_path = get_profile_paths(
+    Path(__file__).resolve().parents[1],
+    st.session_state["active_profile_id"],
+).settings
 settings = load_settings(settings_path)
 
 komplettourgrenze = st.number_input(

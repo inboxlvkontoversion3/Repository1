@@ -1,0 +1,83 @@
+{
+  "filter_vehicle_types_value": [
+    "Sattelzug",
+    ""
+  ],
+  "filter_vehicle_types_default_type": "Sattelzug",
+  "filter_date_range_value": [
+    {
+      "__date__": "2026-10-06"
+    },
+    {
+      "__date__": "2026-10-07"
+    }
+  ],
+  "filter_postal_input_value": "",
+  "tourenbildung_filtered_order_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+  ],
+  "tourenbildung_active_order_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+  ],
+  "reihenfolge_active_tour_signature": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17
+  ],
+  "reihenfolge_pinned_positions": {
+    "8": 1,
+    "4": 2,
+    "2": 3,
+    "12": 4,
+    "6": 5
+  }
+}

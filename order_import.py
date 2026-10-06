@@ -39,6 +39,7 @@ GEOCODING_STATUS_COLUMN = "Geocodierungsstatus"
 GEOCODING_STATUS_STREET_FALLBACK = "street_fallback"
 GEOCODING_STATUS_NOT_FOUND = "not_found"
 GEOCODING_COUNTRY_CODES = {"D": "de", "NL": "nl", "CH": "ch"}
+POSTAL_CODE_LENGTHS = {"D": 5, "NL": 4, "CH": 4}
 IMPORT_COLUMNS = {
 	"Termin bis": "Termin bis",
 	"Empf-Plz": "PLZ",
@@ -121,7 +122,11 @@ def load_vehicle_assignments(path: Path | None = None) -> pd.DataFrame:
 	for column in key_columns:
 		assignments[column] = assignments[column].map(_normalize_match_value)
 	postal_code_column = VEHICLE_ASSIGNMENT_COLUMNS["postal_code"]
-	assignments[postal_code_column] = assignments[postal_code_column].map(normalize_postal_code)
+	country_column = VEHICLE_ASSIGNMENT_COLUMNS["country"]
+	assignments[postal_code_column] = [
+		normalize_postal_code(postal_code, country)
+		for postal_code, country in zip(assignments[postal_code_column], assignments[country_column])
+	]
 	for column in (VEHICLE_ASSIGNMENT_COLUMNS["dreiachser"], VEHICLE_ASSIGNMENT_COLUMNS["sattelzug"]):
 		assignments[column] = pd.to_numeric(assignments[column], errors="coerce")
 	return assignments.groupby(key_columns, as_index=False, dropna=False)[
@@ -133,7 +138,11 @@ def vehicle_assignment_counts(order: pd.Series, path: Path | None = None) -> tup
 	"""Return the two vehicle assignment counts matching an order address."""
 	assignments = load_vehicle_assignments(path)
 	key_columns = [VEHICLE_ASSIGNMENT_COLUMNS[name] for name in ("postal_code", "city", "street")]
-	order_key = tuple(_normalize_match_value(order[column]) for column in ("PLZ", "Ort", "Straße"))
+	order_key = (
+		normalize_postal_code(order["PLZ"], order.get("Empf-LKZ", "D")),
+		_normalize_match_value(order["Ort"]),
+		_normalize_match_value(order["Straße"]),
+	)
 	indexed_assignments = assignments.set_index(key_columns)
 	if order_key not in indexed_assignments.index:
 		return 0, 0
@@ -196,7 +205,10 @@ def parse_pasted_orders(text: str) -> pd.DataFrame:
 	)
 	imported["Empf-LKZ"] = country_values.fillna("").astype(str).str.strip().str.upper()
 	imported.loc[imported["Empf-LKZ"].eq(""), "Empf-LKZ"] = "D"
-	imported["PLZ"] = imported["PLZ"].map(normalize_postal_code)
+	imported["PLZ"] = [
+		normalize_postal_code(postal_code, country)
+		for postal_code, country in zip(imported["PLZ"], imported["Empf-LKZ"])
+	]
 	imported["Termin bis"] = imported["Termin bis"].str.split().str[0]
 	dispo_hints = rows["Dispo - Hinweis"] if "Dispo - Hinweis" in rows else pd.Series("", index=rows.index)
 	dfue_hints = rows["DFÜ-Hinweise"] if "DFÜ-Hinweise" in rows else pd.Series("", index=rows.index)
@@ -221,13 +233,15 @@ def parse_pasted_orders(text: str) -> pd.DataFrame:
 	return imported.loc[:, ORDER_COLUMNS]
 
 
-def normalize_postal_code(value: object) -> str:
-	"""Keep German postal codes as five-character strings."""
+def normalize_postal_code(value: object, country: object = "D") -> str:
+	"""Pad numeric postal codes to the standard length for their country."""
 	text = str(value).strip()
 	if text in {"", "<NA>", "nan", "NaN"}:
 		return ""
-	if text.isdigit() and len(text) <= 5:
-		return text.zfill(5)
+	country_code = str(country).strip().upper()
+	postal_code_length = POSTAL_CODE_LENGTHS.get(country_code, POSTAL_CODE_LENGTHS["D"])
+	if text.isdigit() and len(text) <= postal_code_length:
+		return text.zfill(postal_code_length)
 	return text
 
 
@@ -249,7 +263,11 @@ def normalize_order_countries(orders: pd.DataFrame) -> bool:
 def normalize_order_postal_codes(orders: pd.DataFrame) -> pd.DataFrame:
 	"""Normalize postal codes after loading orders from Excel."""
 	if "PLZ" in orders:
-		orders["PLZ"] = orders["PLZ"].map(normalize_postal_code)
+		countries = orders["Empf-LKZ"] if "Empf-LKZ" in orders else pd.Series("D", index=orders.index)
+		orders["PLZ"] = [
+			normalize_postal_code(postal_code, country)
+			for postal_code, country in zip(orders["PLZ"], countries)
+		]
 	return orders
 
 
@@ -317,6 +335,25 @@ def geocode_address(
 	return float(results[0]["lat"]), float(results[0]["lon"])
 
 
+def geocode_address_with_photon(
+	address: str,
+	country_code: str,
+	opener: Callable = urlopen,
+) -> tuple[float, float] | None:
+	"""Look up an address with Photon and return coordinates as latitude, longitude."""
+	query = urlencode({"q": address, "limit": 1, "countrycode": country_code})
+	request = Request(
+		f"https://photon.komoot.io/api/?{query}",
+		headers={"User-Agent": "Autotourenplaner/0.1 (local planning tool)"},
+	)
+	with opener(request, timeout=15) as response:
+		features = json.load(response)["features"]
+	if not features:
+		return None
+	longitude, latitude = features[0]["geometry"]["coordinates"]
+	return float(latitude), float(longitude)
+
+
 def _clean_address_part(value: object) -> str:
 	"""Normalize a field value for the geocoding string."""
 	text = str(value)
@@ -337,8 +374,9 @@ def geocode_orders(
 	sleep: Callable[[float], None] = time.sleep,
 	opener: Callable = urlopen,
 ) -> Iterator[tuple[int, tuple[float, float] | None]]:
-	"""Yield coordinates for each order, respecting Nominatim's one-second limit."""
+	"""Yield coordinates, using Photon when Nominatim cannot find an order."""
 	cache: dict[tuple[str, str], tuple[float, float] | None] = {}
+	photon_cache: dict[tuple[str, str], tuple[float, float] | None] = {}
 	last_request = 0.0
 	normalize_order_countries(orders)
 	if GEOCODING_STATUS_COLUMN not in orders:
@@ -346,9 +384,9 @@ def geocode_orders(
 	for position, row in enumerate(orders.itertuples(index=False), start=1):
 		row_index = position - 1
 		street = _clean_address_part(row.Straße)
-		plz = normalize_postal_code(row.PLZ)
 		ort = _clean_address_part(row.Ort)
 		country = _clean_address_part(orders.at[row_index, "Empf-LKZ"]).upper() or "D"
+		plz = normalize_postal_code(row.PLZ, country)
 		try:
 			country_code = GEOCODING_COUNTRY_CODES[country]
 		except KeyError as error:
@@ -373,6 +411,19 @@ def geocode_orders(
 				cache[cache_key] = geocode_address(candidate, country_code, opener=opener)
 				last_request = time.monotonic()
 			coordinates = cache[cache_key]
+			if coordinates is None:
+				photon_cache_key = (country_code, candidate)
+				if photon_cache_key not in photon_cache:
+					wait = 1.0 - (time.monotonic() - last_request)
+					if wait > 0:
+						sleep(wait)
+					photon_cache[photon_cache_key] = geocode_address_with_photon(
+						candidate,
+						country_code.upper(),
+						opener=opener,
+					)
+					last_request = time.monotonic()
+				coordinates = photon_cache[photon_cache_key]
 			if coordinates is not None:
 				if candidate != full_address:
 					_mark_warning(orders, row_index, "street")

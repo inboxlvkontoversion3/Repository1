@@ -12,6 +12,7 @@ from streamlit_folium import st_folium
 
 from config import has_valid_selected_vehicle, load_settings
 from map_utils import scale_quantity_to_radius
+from profiles import get_profile_paths
 from order_import import (
 	GEOCODING_STATUS_COLUMN,
 	load_orders,
@@ -21,12 +22,13 @@ from order_import import (
 
 
 project_root = Path(__file__).resolve().parents[1]
-settings_path = project_root / ".autotourenplaner" / "settings.json"
+profile_paths = get_profile_paths(project_root, st.session_state["active_profile_id"])
+settings_path = profile_paths.settings
 if not has_valid_selected_vehicle(load_settings(settings_path)):
 	st.warning("Die Kapazität des ausgewählten Fahrzeugtyps muss eine natürliche Zahl sein.")
 	st.stop()
 
-orders_path = project_root / "data" / "Aufträge.xlsx"
+orders_path = profile_paths.orders
 if not orders_path.exists():
 	st.warning("Legen Sie mindestens einen Auftrag auf der Seite Aufträge an.")
 	st.stop()
@@ -237,7 +239,7 @@ with map_column:
 		map_view = st.session_state.get("tourenbildung_map_view", {})
 		map_action = st_folium(
 			deepcopy(order_map),
-			key="tourenbildung_order_map",
+			key=f"tourenbildung_order_map_{st.session_state['active_profile_id']}",
 			width=None,
 			height=600,
 			zoom=map_view.get("zoom"),

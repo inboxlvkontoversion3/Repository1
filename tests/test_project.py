@@ -19,6 +19,7 @@ from order_import import (
 	normalize_order_dates,
 	normalize_order_countries,
     normalize_order_postal_codes,
+    normalize_postal_code,
     parse_pasted_orders,
     save_orders,
     QUANTITY_THRESHOLD_OVERRIDE_COLUMN,
@@ -105,9 +106,9 @@ def test_order_page_emphasizes_total_without_growing_table_height() -> None:
 
     assert 'font-size: 20px; line-height: 1.5' in page_source
     assert 'Anzahl gesamt: <strong>{total_quantity:g}</strong>' in page_source
-    assert '#scroll { max-height: 519px;' in component_source
-    assert '#scroll { max-height: 486px; }' in component_source
-    assert 'height: 562,' in component_source
+    assert '#scroll { max-height: 503px;' in component_source
+    assert '#scroll { max-height: 470px; }' in component_source
+    assert 'const height = Math.ceil(Math.max(table.getBoundingClientRect().bottom, menuBottom));' in component_source
 
 
 def test_order_table_hover_reveals_only_overflowing_values() -> None:
@@ -386,9 +387,22 @@ def test_legacy_orders_default_to_germany_and_country_codes_are_normalized() -> 
 
     imported_orders = parse_pasted_orders(
         "Termin bis\tEmpf-LKZ\tEmpf-Plz\tEmpf-Ort\tEmpf-Straße\tAnzahl\n"
-        "23.09.2026\tnl\t1234\tAmsterdam\tCanal 1\t1"
+        "23.09.2026\tnl\t123\tAmsterdam\tCanal 1\t1"
     )
     assert imported_orders.loc[0, "Empf-LKZ"] == "NL"
+    assert imported_orders.loc[0, "PLZ"] == "0123"
+
+
+def test_postal_codes_are_normalized_to_country_length() -> None:
+    orders = pd.DataFrame(
+        {
+            "Empf-LKZ": ["D", "NL", "CH"],
+            "PLZ": ["123", "123", "123"],
+        }
+    )
+
+    assert normalize_order_postal_codes(orders)["PLZ"].tolist() == ["00123", "0123", "0123"]
+    assert normalize_postal_code("09599", "NL") == "09599"
 
 
 def test_order_quantity_edit_is_normalized_to_integer() -> None:
@@ -450,6 +464,8 @@ def test_geocoding_retries_without_street_and_marks_warning() -> None:
                 return False
 
             def read(self):
+                if "photon.komoot.io" in request.full_url:
+                    return b'{"type":"FeatureCollection","features":[]}'
                 if "Hebewerkstr" in request.full_url:
                     return b'[]'
                 return b'[{"lat": "51.5", "lon": "7.2"}]'
@@ -463,7 +479,10 @@ def test_geocoding_retries_without_street_and_marks_warning() -> None:
 
     results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
 
-    assert len(calls) == 2
+    assert len(calls) == 3
+    assert "nominatim.openstreetmap.org" in calls[0]
+    assert "photon.komoot.io" in calls[1]
+    assert "nominatim.openstreetmap.org" in calls[2]
     assert results == [(0, (51.5, 7.2))]
     assert orders.loc[0, "Straße"] == "Hebewerkstr. 25-27"
     assert orders.loc[0, GEOCODING_STATUS_COLUMN] == GEOCODING_STATUS_STREET_FALLBACK
@@ -483,7 +502,9 @@ def test_geocoding_retries_with_country_and_postal_code_and_marks_warning() -> N
                 return False
 
             def read(self):
-                if len(calls) == 3:
+                if "photon.komoot.io" in request.full_url:
+                    return b'{"type":"FeatureCollection","features":[]}'
+                if len(calls) == 5:
                     return b'[{"lat": "51.5", "lon": "7.2"}]'
                 return b'[]'
 
@@ -496,11 +517,15 @@ def test_geocoding_retries_with_country_and_postal_code_and_marks_warning() -> N
 
     results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
 
-    assert len(calls) == 3
-    query = parse_qs(urlsplit(calls[2]).query)
+    assert len(calls) == 5
+    assert ["photon.komoot.io" in call for call in calls] == [False, True, False, True, False]
+    request_queries = [parse_qs(urlsplit(call).query)["q"] for call in calls]
+    assert request_queries[0] == request_queries[1]
+    assert request_queries[2] == request_queries[3]
+    query = parse_qs(urlsplit(calls[4]).query)
     assert query["q"] == ["44581"]
     assert query["countrycodes"] == ["de"]
-    assert "Deutschland" not in calls[2]
+    assert "Deutschland" not in calls[4]
     assert results == [(0, (51.5, 7.2))]
     assert orders.loc[0, GEOCODING_STATUS_COLUMN] == GEOCODING_STATUS_STREET_FALLBACK
 
@@ -541,8 +566,12 @@ def test_geocoding_uses_iso_country_code_for_each_imported_country() -> None:
     assert results == [(0, (51.5, 7.2)), (1, (51.5, 7.2)), (2, (51.5, 7.2))]
 
 
-def test_geocoding_marks_address_fields_red_when_every_lookup_fails() -> None:
+def test_geocoding_uses_photon_when_nominatim_finds_no_result() -> None:
+    calls = []
+
     def opener(request, timeout):
+        calls.append(request.full_url)
+
         class Response:
             def __enter__(self):
                 return self
@@ -551,6 +580,56 @@ def test_geocoding_marks_address_fields_red_when_every_lookup_fails() -> None:
                 return False
 
             def read(self):
+                if "photon.komoot.io" in request.full_url:
+                    if parse_qs(urlsplit(request.full_url).query)["q"] == ["44581, Castrop-Rauxel"]:
+                        return (
+                            b'{"type":"FeatureCollection","features":[{"geometry":'
+                            b'{"type":"Point","coordinates":[7.2,51.5]}}]}'
+                        )
+                    return b'{"type":"FeatureCollection","features":[]}'
+                return b"[]"
+
+        return Response()
+
+    orders = parse_pasted_orders(
+        "Termin bis\tEmpf-LKZ\tEmpf-Plz\tEmpf-Ort\tEmpf-Straße\tAnzahl\n"
+        "23.09.2026\tD\t44581\tCastrop-Rauxel\tHebewerkstr. 25-27\t1500\n"
+        "24.09.2026\tD\t44581\tCastrop-Rauxel\tHebewerkstr. 25-27\t1500"
+    )
+
+    results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
+
+    assert len(calls) == 4
+    assert ["photon.komoot.io" in call for call in calls] == [False, True, False, True]
+    queries = [parse_qs(urlsplit(call).query) for call in calls]
+    assert queries[0]["q"] == queries[1]["q"] == ["Hebewerkstr. 25-27, 44581, Castrop-Rauxel"]
+    assert queries[2]["q"] == queries[3]["q"] == ["44581, Castrop-Rauxel"]
+    assert urlsplit(calls[3]).netloc == "photon.komoot.io"
+    assert urlsplit(calls[3]).path == "/api/"
+    assert queries[3] == {
+        "q": ["44581, Castrop-Rauxel"],
+        "limit": ["1"],
+        "countrycode": ["DE"],
+    }
+    assert results == [(0, (51.5, 7.2)), (1, (51.5, 7.2))]
+
+
+def test_geocoding_marks_address_fields_red_when_every_lookup_fails() -> None:
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                if "photon.komoot.io" in request.full_url:
+                    return b'{"type":"FeatureCollection","features":[]}'
                 return b'[]'
 
         return Response()
@@ -562,7 +641,14 @@ def test_geocoding_marks_address_fields_red_when_every_lookup_fails() -> None:
 
     results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
 
+    assert len(calls) == 6
+    assert ["photon.komoot.io" in call for call in calls] == [
+        False, True, False, True, False, True
+    ]
+    request_queries = [parse_qs(urlsplit(call).query)["q"] for call in calls]
+    assert all(request_queries[index] == request_queries[index + 1] for index in (0, 2, 4))
     assert results == [(0, None)]
+    assert orders.loc[0, GEOCODING_STATUS_COLUMN] == GEOCODING_STATUS_NOT_FOUND
     assert orders.loc[0, "PLZ"] == "44581"
     assert orders.loc[0, "Ort"] == "Castrop-Rauxel"
     assert orders.loc[0, "Straße"] == "Hebewerkstr. 25-27"

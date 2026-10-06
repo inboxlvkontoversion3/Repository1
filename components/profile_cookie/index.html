@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+</head>
+<body>
+  <script>
+    function writeProfileCookie(profileId) {
+      const name = "autotourenplaner_profile";
+      const value = encodeURIComponent(profileId);
+      document.cookie = `${name}=${value}; Max-Age=31536000; Path=/; SameSite=Lax`;
+    }
+
+    window.addEventListener("message", (event) => {
+      if (event.data?.type === "streamlit:render") {
+        const profileId = event.data.args?.profile_id;
+        if (typeof profileId === "string") writeProfileCookie(profileId);
+      }
+    });
+
+    window.parent.postMessage(
+      { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+      "*",
+    );
+  </script>
+</body>
+</html>

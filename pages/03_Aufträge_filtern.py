@@ -12,6 +12,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from config import has_valid_selected_vehicle, load_settings, selected_vehicle_type
+from profiles import get_profile_paths
 from map_utils import filter_orders, scale_quantity_to_radius
 from order_import import (
 	FILTER_OVERRIDE_COLUMN,
@@ -23,12 +24,14 @@ from order_import import (
 )
 
 
-settings_path = Path(__file__).resolve().parents[1] / ".autotourenplaner" / "settings.json"
+project_root = Path(__file__).resolve().parents[1]
+profile_paths = get_profile_paths(project_root, st.session_state["active_profile_id"])
+settings_path = profile_paths.settings
 if not has_valid_selected_vehicle(load_settings(settings_path)):
 	st.warning("Die Kapazität des ausgewählten Fahrzeugtyps muss eine natürliche Zahl sein.")
 	st.stop()
 
-orders_path = Path(__file__).resolve().parents[1] / "data" / "Aufträge.xlsx"
+orders_path = profile_paths.orders
 if not orders_path.exists():
 	st.warning("Legen Sie mindestens einen Auftrag auf der Seite Aufträge an.")
 	st.stop()
@@ -330,7 +333,7 @@ with map_column:
 
 		map_action = st_folium(
 			order_map,
-			key="tourenbildung_map",
+			key=f"tourenbildung_order_map_{st.session_state['active_profile_id']}",
 			width=None,
 			height=600,
 			zoom=map_view.get("zoom"),

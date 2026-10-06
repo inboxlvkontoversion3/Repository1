@@ -21,7 +21,7 @@
     body { margin: 0; color: var(--text); background: var(--surface); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     #table { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 8px; overflow: hidden; }
     #table.filter-open { overflow: visible; }
-    #scroll { max-height: 519px; overflow: auto; }
+    #scroll { max-height: 503px; overflow: auto; }
     .row, .header { display: grid; grid-template-columns: var(--column-widths, max-content max-content max-content max-content max-content max-content minmax(220px, 1fr) 46px); min-width: 1050px; align-items: stretch; }
     .header { position: sticky; top: 0; z-index: 2; color: var(--muted); background: var(--header); border-bottom: 1px solid var(--border); font-weight: 600; }
     .cell { position: relative; min-width: 0; padding: 4px 5px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: visible; }
@@ -54,7 +54,7 @@
     .delete { display: grid; place-items: center; width: 28px; height: 28px; margin: 0 auto; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 16px; }
     .delete:hover, .delete:focus { color: var(--danger); background: var(--danger-hover); outline: none; }
     .empty { padding: 18px; color: var(--muted); text-align: center; }
-    @media (max-width: 700px) { #scroll { max-height: 486px; } }
+    @media (max-width: 700px) { #scroll { max-height: 470px; } }
   </style>
 </head>
 <body>
@@ -124,10 +124,14 @@
     }
 
     function setFrameHeight() {
+      const table = document.getElementById("table");
+      const menu = document.getElementById("vehicle-filter-menu");
+      const menuBottom = menu.classList.contains("open") ? menu.getBoundingClientRect().bottom : 0;
+      const height = Math.ceil(Math.max(table.getBoundingClientRect().bottom, menuBottom));
       window.parent.postMessage({
         isStreamlitMessage: true,
         type: "streamlit:setFrameHeight",
-        height: 562,
+        height,
       }, "*");
     }
 
@@ -236,6 +240,7 @@
       vehicleFilterMenu.classList.toggle("open", open);
       table.classList.toggle("filter-open", open);
       vehicleFilterToggle.setAttribute("aria-expanded", String(open));
+      setFrameHeight();
     }
     vehicleFilterToggle.addEventListener("click", () => {
       setVehicleFilterOpen(!vehicleFilterMenu.classList.contains("open"));

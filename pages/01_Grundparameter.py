@@ -6,11 +6,15 @@ import pandas as pd
 import streamlit as st
 
 from config import has_valid_selected_vehicle, load_settings, save_selected_verladestelle, save_vehicles, selected_vehicle_type
+from profiles import get_profile_paths
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
-SETTINGS_PATH = PROJECT_ROOT / ".autotourenplaner" / "settings.json"
+SETTINGS_PATH = get_profile_paths(
+	PROJECT_ROOT,
+	st.session_state["active_profile_id"],
+).settings
 
 
 def find_workbook() -> Path | None:
