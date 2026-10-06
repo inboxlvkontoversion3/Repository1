@@ -15,6 +15,7 @@ from order_import import (
 	load_orders,
 	normalize_order_quantity,
 	normalize_order_postal_codes,
+	normalize_order_countries,
 	parse_pasted_orders,
 	normalize_order_dates,
 	save_orders,
@@ -32,7 +33,10 @@ if not has_valid_selected_vehicle(load_settings(settings_path)):
 
 orders_path = Path(__file__).resolve().parents[1] / "data" / "Aufträge.xlsx"
 orders = normalize_order_postal_codes(load_orders(orders_path))
+country_codes_changed = normalize_order_countries(orders)
 if normalize_order_dates(orders):
+	country_codes_changed = True
+if country_codes_changed:
 	save_orders(orders, orders_path)
 if GEOCODING_STATUS_COLUMN not in orders:
 	orders[GEOCODING_STATUS_COLUMN] = ""
@@ -104,12 +108,13 @@ with st.expander("Aufträge aus Export importieren", expanded=True):
 @st.fragment(key="orders_table")
 def render_orders_table() -> pd.DataFrame:
 	orders = normalize_order_postal_codes(load_orders(orders_path))
+	normalize_order_countries(orders)
 	if GEOCODING_STATUS_COLUMN not in orders:
 		orders[GEOCODING_STATUS_COLUMN] = ""
 	orders["Fahrzeugart"] = orders["Fahrzeugart"].fillna("").astype("string")
 	total_quantity = pd.to_numeric(orders["Anzahl"], errors="coerce").fillna(0).sum()
 	st.markdown(
-		f'<div style="font-size: 14px; color: inherit;">{len(orders)} Aufträge | Anzahl gesamt: {total_quantity:g}</div>',
+		f'<div style="font-size: 20px; line-height: 1.5; color: inherit;">{len(orders)} Aufträge | Anzahl gesamt: <strong>{total_quantity:g}</strong></div>',
 		unsafe_allow_html=True,
 	)
 

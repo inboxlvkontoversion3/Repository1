@@ -21,7 +21,7 @@
     body { margin: 0; color: var(--text); background: var(--surface); font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     #table { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 8px; overflow: hidden; }
     #table.filter-open { overflow: visible; }
-    #scroll { max-height: 527px; overflow: auto; }
+    #scroll { max-height: 519px; overflow: auto; }
     .row, .header { display: grid; grid-template-columns: var(--column-widths, max-content max-content max-content max-content max-content max-content minmax(220px, 1fr) 46px); min-width: 1050px; align-items: stretch; }
     .header { position: sticky; top: 0; z-index: 2; color: var(--muted); background: var(--header); border-bottom: 1px solid var(--border); font-weight: 600; }
     .cell { position: relative; min-width: 0; padding: 4px 5px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); overflow: visible; }
@@ -54,13 +54,13 @@
     .delete { display: grid; place-items: center; width: 28px; height: 28px; margin: 0 auto; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 16px; }
     .delete:hover, .delete:focus { color: var(--danger); background: var(--danger-hover); outline: none; }
     .empty { padding: 18px; color: var(--muted); text-align: center; }
-    @media (max-width: 700px) { #scroll { max-height: 494px; } }
+    @media (max-width: 700px) { #scroll { max-height: 486px; } }
   </style>
 </head>
 <body>
   <div id="table">
     <div class="header">
-      <div class="cell">Termin bis</div><div class="cell">PLZ</div><div class="cell">Ort</div><div class="cell">Straße</div>
+      <div class="cell">Termin bis</div><div class="cell">Empf-LKZ</div><div class="cell">PLZ</div><div class="cell">Ort</div><div class="cell">Straße</div>
       <div class="cell">Anzahl</div>
       <div class="cell vehicle-header"><span>Fahrzeugart</span>
         <div class="header-controls">
@@ -75,7 +75,7 @@
   </div>
   <script>
     const state = { scrollTop: 0, actionId: Date.now(), rows: [], vehicleTypes: [], selectedVehicleTypes: null, vehicleSort: 0 };
-    const columns = ["Termin bis", "PLZ", "Ort", "Straße", "Anzahl", "Fahrzeugart", "Hinweise"];
+    const columns = ["Termin bis", "Empf-LKZ", "PLZ", "Ort", "Straße", "Anzahl", "Fahrzeugart", "Hinweise"];
     const editable = new Set(["Termin bis", "Anzahl", "Fahrzeugart", "Hinweise"]);
     const fixedColumns = columns.slice(0, -1);
     const textMeasure = document.createElement("canvas").getContext("2d");
@@ -105,7 +105,7 @@
     }
 
     function setColumnWidths(rows) {
-      const compactColumns = new Set(["Termin bis", "PLZ"]);
+      const compactColumns = new Set(["Termin bis", "Empf-LKZ", "PLZ"]);
       const widths = fixedColumns.map((column) => {
         const headerPadding = compactColumns.has(column) ? 11 : 42;
         const headerWidth = measureWidth(column, headerPadding + (column === "Fahrzeugart" ? 80 : 0));
@@ -127,7 +127,7 @@
       window.parent.postMessage({
         isStreamlitMessage: true,
         type: "streamlit:setFrameHeight",
-        height: 570,
+        height: 562,
       }, "*");
     }
 

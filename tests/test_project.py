@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import date
 from math import sqrt
+from urllib.parse import parse_qs, urlsplit
 
 import pandas as pd
 
@@ -16,6 +17,7 @@ from order_import import (
     load_orders,
     normalize_order_quantity,
 	normalize_order_dates,
+	normalize_order_countries,
     normalize_order_postal_codes,
     parse_pasted_orders,
     save_orders,
@@ -95,6 +97,17 @@ def test_order_table_vehicle_filter_uses_configured_vehicle_types() -> None:
     assert 'args.vehicle_types || []' in component_source
     assert 'vehicleType || "Nicht zugewiesen"' in component_source
     assert 'render({ rows: state.rows, vehicle_types: state.vehicleTypes.slice(0, -1) });' in component_source
+
+
+def test_order_page_emphasizes_total_without_growing_table_height() -> None:
+    page_source = (PAGES_DIR / "02_Aufträge.py").read_text(encoding="utf-8")
+    component_source = (PROJECT_ROOT / "components" / "order_table" / "index.html").read_text(encoding="utf-8")
+
+    assert 'font-size: 20px; line-height: 1.5' in page_source
+    assert 'Anzahl gesamt: <strong>{total_quantity:g}</strong>' in page_source
+    assert '#scroll { max-height: 519px;' in component_source
+    assert '#scroll { max-height: 486px; }' in component_source
+    assert 'height: 562,' in component_source
 
 
 def test_order_table_hover_reveals_only_overflowing_values() -> None:
@@ -277,6 +290,7 @@ def test_pasted_orders_are_mapped_and_hints_are_combined() -> None:
     orders = parse_pasted_orders(text)
 
     assert orders.loc[0, "Termin bis"] == "23.09.2026"
+    assert orders.loc[0, "Empf-LKZ"] == "D"
     assert orders.loc[0, "Ort"] == "Castrop-Rauxel"
     assert orders.loc[0, "Hinweise"] == "Sattelzug Ref.-Nr.: INFO"
 
@@ -362,6 +376,19 @@ def test_postal_codes_keep_leading_zero_through_excel_round_trip(tmp_path: Path)
     loaded = pd.read_excel(workbook, dtype={"PLZ": "string"})
 
     assert normalize_order_postal_codes(loaded).loc[0, "PLZ"] == "01234"
+
+
+def test_legacy_orders_default_to_germany_and_country_codes_are_normalized() -> None:
+    legacy_orders = pd.DataFrame({"Termin bis": ["23.09.2026"], "PLZ": ["01234"]})
+
+    assert normalize_order_countries(legacy_orders)
+    assert legacy_orders.loc[0, "Empf-LKZ"] == "D"
+
+    imported_orders = parse_pasted_orders(
+        "Termin bis\tEmpf-LKZ\tEmpf-Plz\tEmpf-Ort\tEmpf-Straße\tAnzahl\n"
+        "23.09.2026\tnl\t1234\tAmsterdam\tCanal 1\t1"
+    )
+    assert imported_orders.loc[0, "Empf-LKZ"] == "NL"
 
 
 def test_order_quantity_edit_is_normalized_to_integer() -> None:
@@ -470,9 +497,48 @@ def test_geocoding_retries_with_country_and_postal_code_and_marks_warning() -> N
     results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
 
     assert len(calls) == 3
-    assert "q=Deutschland%2C+44581" in calls[2]
+    query = parse_qs(urlsplit(calls[2]).query)
+    assert query["q"] == ["44581"]
+    assert query["countrycodes"] == ["de"]
+    assert "Deutschland" not in calls[2]
     assert results == [(0, (51.5, 7.2))]
     assert orders.loc[0, GEOCODING_STATUS_COLUMN] == GEOCODING_STATUS_STREET_FALLBACK
+
+
+def test_geocoding_uses_iso_country_code_for_each_imported_country() -> None:
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'[{"lat": "51.5", "lon": "7.2"}]'
+
+        return Response()
+
+    orders = parse_pasted_orders(
+        "Termin bis\tEmpf-LKZ\tEmpf-Plz\tEmpf-Ort\tEmpf-Straße\tAnzahl\n"
+        "23.09.2026\tD\t10115\tBerlin\tStreet 1\t1\n"
+        "23.09.2026\tNL\t10115\tAmsterdam\tStreet 1\t1\n"
+        "23.09.2026\tCH\t10115\tZürich\tStreet 1\t1"
+    )
+
+    results = list(geocode_orders(orders, sleep=lambda _: None, opener=opener))
+
+    assert len(calls) == 3
+    assert [
+        parse_qs(urlsplit(call).query)["countrycodes"][0]
+        for call in calls
+    ] == ["de", "nl", "ch"]
+    assert all("Deutschland" not in call and "Germany" not in call for call in calls)
+    assert results == [(0, (51.5, 7.2)), (1, (51.5, 7.2)), (2, (51.5, 7.2))]
 
 
 def test_geocoding_marks_address_fields_red_when_every_lookup_fails() -> None:

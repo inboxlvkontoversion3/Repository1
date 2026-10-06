@@ -7,7 +7,12 @@ autotourenplaner.egg-info/requires.txt
 autotourenplaner.egg-info/top_level.txt
 pages/01_Grundparameter.py
 pages/02_Aufträge.py
-pages/03_Tourenbildung.py
-pages/04_Reihenfolge.py
-pages/05_Einstellungen.py
+pages/03_Aufträge_filtern.py
+pages/04_Tourenbildung.py
+pages/05_Reihenfolge.py
+pages/06_Einstellungen.py
+tests/test_launcher.py
 tests/test_project.py
+tests/test_route_alignment.py
+tests/test_route_editor.py
+tests/test_routing.py

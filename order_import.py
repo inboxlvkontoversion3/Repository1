@@ -19,6 +19,7 @@ import pandas as pd
 
 ORDER_COLUMNS = [
 	"Termin bis",
+	"Empf-LKZ",
 	"PLZ",
 	"Ort",
 	"Straße",
@@ -37,6 +38,7 @@ QUANTITY_THRESHOLD_OVERRIDE_COLUMN = "Komplettourgrenze automatisch"
 GEOCODING_STATUS_COLUMN = "Geocodierungsstatus"
 GEOCODING_STATUS_STREET_FALLBACK = "street_fallback"
 GEOCODING_STATUS_NOT_FOUND = "not_found"
+GEOCODING_COUNTRY_CODES = {"D": "de", "NL": "nl", "CH": "ch"}
 IMPORT_COLUMNS = {
 	"Termin bis": "Termin bis",
 	"Empf-Plz": "PLZ",
@@ -188,6 +190,12 @@ def parse_pasted_orders(text: str) -> pd.DataFrame:
 	imported = pd.DataFrame(index=rows.index)
 	for source, target in IMPORT_COLUMNS.items():
 		imported[target] = rows[source].str.strip()
+	country_values = rows.get(
+		"Empf-LKZ",
+		rows.get("Empfänger-LKZ", pd.Series("D", index=rows.index)),
+	)
+	imported["Empf-LKZ"] = country_values.fillna("").astype(str).str.strip().str.upper()
+	imported.loc[imported["Empf-LKZ"].eq(""), "Empf-LKZ"] = "D"
 	imported["PLZ"] = imported["PLZ"].map(normalize_postal_code)
 	imported["Termin bis"] = imported["Termin bis"].str.split().str[0]
 	dispo_hints = rows["Dispo - Hinweis"] if "Dispo - Hinweis" in rows else pd.Series("", index=rows.index)
@@ -197,15 +205,11 @@ def parse_pasted_orders(text: str) -> pd.DataFrame:
 		+ dfue_hints.str.strip().str.replace("/", "", regex=False).map(lambda value: f" {value}" if value else "")
 	).str.strip()
 	assignments = load_vehicle_assignments()
-	country_values = rows.get(
-		"Empf-LKZ",
-		rows.get("Empfänger-LKZ", pd.Series("", index=rows.index)),
-	)
 	imported["Fahrzeugart"] = [
 		(
 			"Dreiachser"
 			if "achse" in imported.loc[index, "Hinweise"].casefold()
-			else _vehicle_type_for_order(imported.loc[index], assignments, country_values.loc[index])
+			else _vehicle_type_for_order(imported.loc[index], assignments, imported.loc[index, "Empf-LKZ"])
 		)
 		for index in imported.index
 	]
@@ -225,6 +229,21 @@ def normalize_postal_code(value: object) -> str:
 	if text.isdigit() and len(text) <= 5:
 		return text.zfill(5)
 	return text
+
+
+def normalize_order_countries(orders: pd.DataFrame) -> bool:
+	"""Add country codes to legacy orders and normalize them for geocoding."""
+	changed = False
+	if "Empf-LKZ" not in orders:
+		orders.insert(1, "Empf-LKZ", "D")
+		return True
+
+	normalized = orders["Empf-LKZ"].fillna("").astype(str).str.strip().str.upper()
+	normalized = normalized.mask(normalized.eq(""), "D")
+	changed = not orders["Empf-LKZ"].fillna("").astype(str).equals(normalized)
+	if changed:
+		orders["Empf-LKZ"] = normalized
+	return changed
 
 
 def normalize_order_postal_codes(orders: pd.DataFrame) -> pd.DataFrame:
@@ -280,9 +299,13 @@ def update_quantity_threshold_exclusion(
 		orders.at[order_index, QUANTITY_THRESHOLD_OVERRIDE_COLUMN] = True
 
 
-def geocode_address(address: str, opener: Callable = urlopen) -> tuple[float, float] | None:
+def geocode_address(
+	address: str,
+	country_code: str,
+	opener: Callable = urlopen,
+) -> tuple[float, float] | None:
 	"""Look up an address with the public Nominatim endpoint."""
-	query = urlencode({"q": address, "format": "jsonv2", "limit": 1, "countrycodes": "de"})
+	query = urlencode({"q": address, "format": "jsonv2", "limit": 1, "countrycodes": country_code})
 	request = Request(
 		f"https://nominatim.openstreetmap.org/search?{query}",
 		headers={"User-Agent": "Autotourenplaner/0.1 (local planning tool)"},
@@ -315,8 +338,9 @@ def geocode_orders(
 	opener: Callable = urlopen,
 ) -> Iterator[tuple[int, tuple[float, float] | None]]:
 	"""Yield coordinates for each order, respecting Nominatim's one-second limit."""
-	cache: dict[str, tuple[float, float] | None] = {}
+	cache: dict[tuple[str, str], tuple[float, float] | None] = {}
 	last_request = 0.0
+	normalize_order_countries(orders)
 	if GEOCODING_STATUS_COLUMN not in orders:
 		orders[GEOCODING_STATUS_COLUMN] = ""
 	for position, row in enumerate(orders.itertuples(index=False), start=1):
@@ -324,25 +348,31 @@ def geocode_orders(
 		street = _clean_address_part(row.Straße)
 		plz = normalize_postal_code(row.PLZ)
 		ort = _clean_address_part(row.Ort)
-		full_address = ", ".join(part for part in (street, plz, ort, "Deutschland") if part)
-		fallback_address = ", ".join(part for part in (plz, ort, "Deutschland") if part)
+		country = _clean_address_part(orders.at[row_index, "Empf-LKZ"]).upper() or "D"
+		try:
+			country_code = GEOCODING_COUNTRY_CODES[country]
+		except KeyError as error:
+			raise ValueError(f"Unbekannter Empf-LKZ für Geocoding: {country}") from error
+		full_address = ", ".join(part for part in (street, plz, ort) if part)
+		fallback_address = ", ".join(part for part in (plz, ort) if part)
 		coordinates: tuple[float, float] | None = None
 		candidates = [full_address]
 		if street:
 			candidates.append(fallback_address)
 		if plz:
-			candidates.append(f"Deutschland, {plz}")
+			candidates.append(plz)
 
 		for candidate in candidates:
 			if not candidate:
 				continue
-			if candidate not in cache:
+			cache_key = (country_code, candidate)
+			if cache_key not in cache:
 				wait = 1.0 - (time.monotonic() - last_request)
 				if wait > 0:
 					sleep(wait)
-				cache[candidate] = geocode_address(candidate, opener=opener)
+				cache[cache_key] = geocode_address(candidate, country_code, opener=opener)
 				last_request = time.monotonic()
-			coordinates = cache[candidate]
+			coordinates = cache[cache_key]
 			if coordinates is not None:
 				if candidate != full_address:
 					_mark_warning(orders, row_index, "street")

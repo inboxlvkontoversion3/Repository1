@@ -6,7 +6,9 @@ Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Requires-Dist: pandas<4,>=2.2
 Requires-Dist: openpyxl<4,>=3.1
+Requires-Dist: folium<1,>=0.18
 Requires-Dist: streamlit<2,>=1.40
+Requires-Dist: streamlit-folium<1,>=0.23
 Provides-Extra: test
 Requires-Dist: pytest<9,>=8; extra == "test"
 
@@ -30,18 +32,23 @@ python -m pip install -e ".[test]"
 ## Start the application
 
 ```bash
-streamlit run app.py
+python launcher.py
 ```
+
+On Linux, the launcher stops any existing Streamlit process running this project's `app.py` before starting a fresh instance.
 
 The application includes these pages:
 
 - Grundparameter
 - Aufträge
+- Aufträge filtern
 - Tourenbildung
 - Reihenfolge
 - Einstellungen
 
-The base-parameter page loads `Verladestellen.xlsx` and stores the selected loading point in `.autotourenplaner/settings.json`. Order import, routing, tour formation, and route optimization are not implemented yet.
+The base-parameter page loads `data/Verladestellen.xlsx` and stores the selected loading point in `.autotourenplaner/settings.json`. Page 5 uses the public OSRM routing service to calculate one route containing all active orders. The selected loading point is always the first and last stop. A single table request is used for optimization and a second request retrieves the final road geometry; the requests have short timeouts and provider failures are shown in the UI.
+
+The `OSRM_ENDPOINT` environment variable can override the default routing endpoint. The application requires network access while calculating a route. Haversine distances are used locally to guide larger-route heuristics, but they are not presented as a fallback route when OSRM is unavailable. Vehicle capacity and splitting one set of active orders into multiple tours are not implemented yet.
 
 ## Tests
 
