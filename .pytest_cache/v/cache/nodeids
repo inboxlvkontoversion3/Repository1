@@ -54,6 +54,9 @@
   "tests/test_project.py::test_quantity_exclusions_are_applied_during_import_not_filtering",
   "tests/test_project.py::test_quantity_scaling_handles_equal_quantities",
   "tests/test_project.py::test_quantity_scaling_uses_configured_radius_bounds",
+  "tests/test_project.py::test_route_order_uses_osrm_road_distances",
+  "tests/test_project.py::test_route_order_uses_osrm_travel_times",
+  "tests/test_project.py::test_route_page_displays_truck_adjusted_estimated_driving_time",
   "tests/test_project.py::test_selected_vehicle_requires_a_natural_capacity",
   "tests/test_project.py::test_settings_can_be_saved_and_loaded",
   "tests/test_route_alignment.py::test_bad_layout_has_drifting_columns",
@@ -61,6 +64,8 @@
   "tests/test_route_editor.py::test_drag_preview_survives_insert_swap_and_insert_targets",
   "tests/test_route_editor.py::test_info_button_sends_order_details_action_without_changing_pins",
   "tests/test_routing.py::test_exact_route_keeps_pinned_stops_in_their_positions",
+  "tests/test_routing.py::test_exact_route_optimizes_road_distance",
+  "tests/test_routing.py::test_exact_route_optimizes_travel_time_not_road_distance",
   "tests/test_routing.py::test_exact_route_uses_depot_at_both_ends",
   "tests/test_routing.py::test_fetch_osrm_route_converts_geojson_coordinates",
   "tests/test_routing.py::test_fetch_osrm_route_rejects_missing_geometry",
@@ -68,6 +73,7 @@
   "tests/test_routing.py::test_fetch_osrm_table_rejects_non_numeric_values",
   "tests/test_routing.py::test_fetch_osrm_table_validates_and_returns_matrices",
   "tests/test_routing.py::test_haversine_distance_is_zero_for_same_point",
+  "tests/test_routing.py::test_large_constrained_route_tries_alternative_first_stops",
   "tests/test_routing.py::test_large_route_contains_every_stop_once",
   "tests/test_routing.py::test_route_signature_changes_when_stop_changes"
 ]

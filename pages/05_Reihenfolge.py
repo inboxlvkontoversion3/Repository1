@@ -32,6 +32,9 @@ from routing import (
 )
 
 
+TRUCK_DRIVING_TIME_FACTOR = 1.2
+
+
 project_root = Path(__file__).resolve().parents[1]
 profile_paths = get_profile_paths(project_root, st.session_state["active_profile_id"])
 settings_path = profile_paths.settings
@@ -207,8 +210,11 @@ route_points = [points[index] for index in route]
 left_column, map_column = st.columns(2, gap="medium")
 with left_column:
 	st.markdown(
-		f"<div style='margin:0 0 0.6rem 0;font-size:1rem;color:inherit;font-weight:400'>"
-		f"Gesamtfahrstrecke: {cached_result['distance_m'] / 1000:.1f} km</div>",
+		f"<div style='display:flex;flex-wrap:wrap;gap:0.25rem 1.5rem;margin:0 0 0.6rem 0;"
+		f"font-size:1rem;color:inherit;font-weight:400'>"
+		f"<span>Gesamtfahrstrecke: {cached_result['distance_m'] / 1000:.1f} km</span>"
+		f"<span>Geschätzte Fahrzeit: "
+		f"{format_duration(cached_result['duration_s'] * TRUCK_DRIVING_TIME_FACTOR)}</span></div>",
 		unsafe_allow_html=True,
 	)
 	editor_rows = []

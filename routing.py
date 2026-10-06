@@ -54,13 +54,13 @@ def haversine_matrix(points: list[tuple[float, float]]) -> list[list[float]]:
 
 def _validate_matrix(matrix: list[list[float]]) -> None:
 	if not matrix or any(len(row) != len(matrix) for row in matrix):
-		raise RoutingError("OSRM hat keine vollständige Entfernungsmatrix geliefert.")
+		raise RoutingError("OSRM hat keine vollständige Kostenmatrix geliefert.")
 	if any(
 		not isinstance(value, (int, float)) or not isfinite(value) or value < 0
 		for row in matrix
 		for value in row
 	):
-		raise RoutingError("OSRM hat ungültige Fahrzeiten geliefert.")
+		raise RoutingError("OSRM hat ungültige Kostenwerte geliefert.")
 
 
 def _route_cost(route: list[int], matrix: list[list[float]]) -> float:
@@ -151,14 +151,22 @@ def _constrained_nearest_neighbor(
 	matrix: list[list[float]],
 	straight_line: list[list[float]],
 	fixed_positions: dict[int, int],
+	first_stop: int | None = None,
 ) -> list[int]:
 	stop_count = len(matrix) - 1
 	ordered_stops: dict[int, int] = {position: stop for stop, position in fixed_positions.items()}
 	remaining = set(range(1, len(matrix))) - set(fixed_positions)
 	current = 0
+	first_free_position = min(
+		(position for position in range(1, stop_count + 1) if position not in ordered_stops),
+		default=None,
+	)
 	for position in range(1, stop_count + 1):
 		if position not in ordered_stops:
-			next_stop = min(remaining, key=lambda stop: (matrix[current][stop], straight_line[current][stop], stop))
+			if position == first_free_position and first_stop is not None:
+				next_stop = first_stop
+			else:
+				next_stop = min(remaining, key=lambda stop: (matrix[current][stop], straight_line[current][stop], stop))
 			ordered_stops[position] = next_stop
 			remaining.remove(next_stop)
 		current = ordered_stops[position]
@@ -169,20 +177,44 @@ def _constrained_two_opt(route: list[int], matrix: list[list[float]], fixed_posi
 	best_route = route
 	best_cost = _route_cost(best_route, matrix)
 	free_positions = [position for position in range(1, len(route) - 1) if position not in fixed_positions.values()]
-	improved = True
-	while improved and monotonic() < deadline:
-		improved = False
-		for first_index, first_position in enumerate(free_positions):
-			for second_position in free_positions[first_index + 1:]:
+	while monotonic() < deadline:
+		best_neighbor = best_route
+		best_neighbor_cost = best_cost
+		free_stops = [best_route[position] for position in free_positions]
+		for first_index in range(len(free_positions) - 1):
+			for last_index in range(first_index + 1, len(free_positions)):
 				candidate = best_route.copy()
-				candidate[first_position], candidate[second_position] = candidate[second_position], candidate[first_position]
+				reversed_stops = reversed(free_stops[first_index:last_index + 1])
+				for position, stop in zip(free_positions[first_index:last_index + 1], reversed_stops):
+					candidate[position] = stop
 				candidate_cost = _route_cost(candidate, matrix)
-				if candidate_cost + 1e-9 < best_cost:
-					best_route, best_cost = candidate, candidate_cost
-					improved = True
+				if candidate_cost + 1e-9 < best_neighbor_cost:
+					best_neighbor, best_neighbor_cost = candidate, candidate_cost
+				if monotonic() >= deadline:
 					break
-			if improved or monotonic() >= deadline:
+			if monotonic() >= deadline:
 				break
+		if monotonic() < deadline:
+			for source_index in range(len(free_positions)):
+				for target_index in range(len(free_positions)):
+					if source_index == target_index:
+						continue
+					reordered_stops = free_stops.copy()
+					moved_stop = reordered_stops.pop(source_index)
+					reordered_stops.insert(target_index, moved_stop)
+					candidate = best_route.copy()
+					for position, stop in zip(free_positions, reordered_stops):
+						candidate[position] = stop
+					candidate_cost = _route_cost(candidate, matrix)
+					if candidate_cost + 1e-9 < best_neighbor_cost:
+						best_neighbor, best_neighbor_cost = candidate, candidate_cost
+					if monotonic() >= deadline:
+						break
+				if monotonic() >= deadline:
+					break
+		if best_neighbor_cost + 1e-9 >= best_cost:
+			break
+		best_route, best_cost = best_neighbor, best_neighbor_cost
 	return best_route
 
 
@@ -204,22 +236,58 @@ def optimize_route(
 	exact_stop_limit: int = EXACT_STOP_LIMIT,
 	time_limit_seconds: float = 2.0,
 ) -> list[int]:
-	"""Return a depot-first route, using exact or bounded heuristic optimization."""
+	"""Return a depot-first route minimizing travel time with exact or bounded heuristics."""
 	_validate_matrix(duration_matrix)
 	if len(duration_matrix) == 1:
 		return [0, 0]
 	if straight_line_matrix is None:
 		straight_line_matrix = duration_matrix
+	_validate_matrix(straight_line_matrix)
+	if len(straight_line_matrix) != len(duration_matrix):
+		raise RoutingError("OSRM hat keine übereinstimmenden Kostenmatrizen geliefert.")
 	fixed_positions = _validate_fixed_positions(fixed_positions, len(duration_matrix) - 1)
 	if len(duration_matrix) - 1 <= exact_stop_limit:
 		return _exact_route(duration_matrix, fixed_positions)
 	deadline = monotonic() + max(0.01, time_limit_seconds)
 	if fixed_positions:
-		return _constrained_two_opt(
-			_constrained_nearest_neighbor(duration_matrix, straight_line_matrix, fixed_positions),
+		free_stops = set(range(1, len(duration_matrix))) - set(fixed_positions)
+		if not free_stops:
+			return _constrained_nearest_neighbor(duration_matrix, straight_line_matrix, fixed_positions)
+		first_free_position = min(
+			position
+			for position in range(1, len(duration_matrix))
+			if position not in fixed_positions.values()
+		)
+		previous_stop = 0 if first_free_position == 1 else next(
+			stop for stop, position in fixed_positions.items() if position == first_free_position - 1
+		)
+		starts = sorted(
+			free_stops,
+			key=lambda stop: (duration_matrix[previous_stop][stop], straight_line_matrix[previous_stop][stop], stop),
+		)
+		best_route: list[int] | None = None
+		best_cost = float("inf")
+		for start_index, start in enumerate(starts):
+			if monotonic() >= deadline:
+				break
+			remaining_time = deadline - monotonic()
+			starts_left = len(starts) - start_index
+			start_deadline = monotonic() + remaining_time / starts_left
+			candidate = _constrained_nearest_neighbor(
+				duration_matrix,
+				straight_line_matrix,
+				fixed_positions,
+				first_stop=start,
+			)
+			candidate = _constrained_two_opt(candidate, duration_matrix, fixed_positions, start_deadline)
+			candidate_cost = _route_cost(candidate, duration_matrix)
+			if candidate_cost < best_cost:
+				best_route, best_cost = candidate, candidate_cost
+		return best_route or _constrained_nearest_neighbor(
 			duration_matrix,
+			straight_line_matrix,
 			fixed_positions,
-			deadline,
+			first_stop=starts[0],
 		)
 	best_route = _nearest_neighbor(0, duration_matrix, straight_line_matrix)
 	best_cost = _route_cost(best_route, duration_matrix)

@@ -34,8 +34,50 @@ def test_exact_route_keeps_pinned_stops_in_their_positions() -> None:
 	assert sorted(route[1:-1]) == [1, 2, 3, 4]
 
 
+def test_exact_route_optimizes_travel_time_not_road_distance() -> None:
+	distances = [
+		[0, 1, 8, 1],
+		[1, 0, 1, 8],
+		[8, 1, 0, 1],
+		[1, 8, 1, 0],
+	]
+	durations = [
+		[0, 100, 1, 100],
+		[100, 0, 100, 1],
+		[1, 100, 0, 100],
+		[100, 1, 100, 0],
+	]
+
+	assert routing.optimize_route(durations) == [0, 1, 3, 2, 0]
+	assert routing._route_cost([0, 1, 3, 2, 0], durations) == 202
+	assert routing._route_cost([0, 1, 2, 3, 0], distances) == 4
+
+
+def test_large_constrained_route_tries_alternative_first_stops() -> None:
+	durations = [[0 if first == second else 30 for second in range(6)] for first in range(6)]
+	durations[0][1] = 0
+	durations[1][2] = 1
+	durations[1][3] = 2
+	durations[2][3] = 1
+	durations[3][4] = 1
+	durations[4][5] = 1
+	durations[5][2] = 1
+	durations[2][0] = 1
+	straight_line = [[0 if first == second else 1 for second in range(6)] for first in range(6)]
+
+	route = routing.optimize_route(
+		durations,
+		straight_line,
+		fixed_positions={1: 1},
+		exact_stop_limit=3,
+	)
+
+	assert route == [0, 1, 3, 4, 5, 2, 0]
+	assert routing._route_cost(route, durations) == 6
+
+
 def test_large_route_contains_every_stop_once() -> None:
-	count = 11
+	count = 12
 	durations = [[0 if first == second else abs(first - second) for second in range(count)] for first in range(count)]
 
 	route = routing.optimize_route(durations, time_limit_seconds=0.1)

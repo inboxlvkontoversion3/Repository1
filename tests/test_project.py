@@ -67,6 +67,21 @@ def test_order_page_resets_pins_when_active_tours_change() -> None:
     assert 'st.session_state.pop("reihenfolge_manual_route", None)' in page_source
 
 
+def test_route_order_uses_osrm_travel_times() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+
+    assert "duration_matrix, _distance_matrix = fetch_osrm_table(points, endpoint=endpoint)" in page_source
+    assert "route = optimize_route(\n\t\t\t\t\tduration_matrix," in page_source
+
+
+def test_route_page_displays_truck_adjusted_estimated_driving_time() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+
+    assert "TRUCK_DRIVING_TIME_FACTOR = 1.2" in page_source
+    assert "Geschätzte Fahrzeit (LKW, ×1,2):" in page_source
+    assert "cached_result['duration_s'] * TRUCK_DRIVING_TIME_FACTOR" in page_source
+
+
 def test_filter_page_persists_filter_widget_values() -> None:
     page_source = (PAGES_DIR / "03_Aufträge_filtern.py").read_text(encoding="utf-8")
 
