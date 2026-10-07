@@ -51,6 +51,11 @@
     input[readonly] { color: var(--text); cursor: default; }
     .cell[data-full-value]::after { content: attr(data-full-value); position: absolute; left: 8px; right: 8px; top: calc(100% - 2px); z-index: 3; display: none; max-height: 160px; padding: 7px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgb(0 0 0 / 18%); white-space: normal; overflow-wrap: anywhere; }
     .cell[data-full-value][data-overflow="true"]:hover::after, .cell[data-full-value][data-overflow="true"]:focus-within::after { display: block; }
+    .vehicle-editor { display: flex; align-items: center; gap: 3px; }
+    .vehicle-editor select { flex: 1; width: 0; }
+    .remember-vehicle { flex: 0 0 27px; width: 27px; height: 28px; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 16px; }
+    .remember-vehicle:hover:not(:disabled), .remember-vehicle:focus:not(:disabled) { color: var(--focus); background: var(--hover); outline: none; }
+    .remember-vehicle:disabled { cursor: default; opacity: 0.45; }
     .delete { display: grid; place-items: center; width: 28px; height: 28px; margin: 0 auto; padding: 0; color: var(--muted); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: 16px; }
     .delete:hover, .delete:focus { color: var(--danger); background: var(--danger-hover); outline: none; }
     .empty { padding: 18px; color: var(--muted); text-align: center; }
@@ -110,7 +115,7 @@
         const headerPadding = compactColumns.has(column) ? 11 : 42;
         const headerWidth = measureWidth(column, headerPadding + (column === "Fahrzeugart" ? 80 : 0));
         const contentPadding = compactColumns.has(column) ? 25 : 42;
-        const controlExtra = column === "Fahrzeugart" ? 48 : 0;
+        const controlExtra = column === "Fahrzeugart" ? 78 : 0;
         const contentWidth = Math.max(...rows.map((row) => measureWidth(row[column], contentPadding + controlExtra)), 0);
         return `${Math.max(headerWidth, contentWidth)}px`;
       });
@@ -171,13 +176,35 @@
       input.value = row[column] || "";
       if (column === "Termin bis") input.addEventListener("click", () => input.showPicker?.());
       if (column === "Fahrzeugart") {
-        ["", "Sattelzug", "Dreiachser"].forEach((value) => {
+        ["", ...state.vehicleTypes.filter(Boolean)].forEach((value) => {
           const option = document.createElement("option"); option.value = value; option.textContent = value || "Keine Auswahl"; input.append(option);
         });
         input.value = row[column] || "";
       }
       input.addEventListener("change", () => send({ type: "edit", row: row.row_index, column, value: input.value, action_id: ++state.actionId }));
       return input;
+    }
+
+    function vehicleEditor(row) {
+      const editor = document.createElement("div");
+      editor.className = "vehicle-editor";
+      const select = cellInput(row, "Fahrzeugart");
+      const remember = document.createElement("button");
+      remember.className = "remember-vehicle";
+      remember.type = "button";
+      remember.textContent = "☆";
+      remember.title = "Ausgewählte Fahrzeugart für diesen Empfänger merken";
+      remember.setAttribute("aria-label", remember.title);
+      remember.disabled = !select.value;
+      select.addEventListener("change", () => { remember.disabled = !select.value; });
+      remember.addEventListener("click", () => send({
+        type: "remember_vehicle_type",
+        row: row.row_index,
+        value: select.value,
+        action_id: ++state.actionId,
+      }));
+      editor.append(select, remember);
+      return editor;
     }
 
     function render(args) {
@@ -215,7 +242,8 @@
           if (row["Geocodierungsstatus"] === "not_found" && ["PLZ", "Ort", "Straße"].includes(column)) cell.classList.add("geocoding-error");
           const fullValue = valueText(row[column]);
           if (fullValue) cell.dataset.fullValue = fullValue;
-          if (editable.has(column)) cell.append(cellInput(row, column));
+          if (column === "Fahrzeugart") cell.append(vehicleEditor(row));
+          else if (editable.has(column)) cell.append(cellInput(row, column));
           else { const input = document.createElement("input"); input.value = row[column] || ""; input.readOnly = true; cell.append(input); }
           element.append(cell);
         });

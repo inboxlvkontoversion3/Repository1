@@ -54,6 +54,7 @@ VEHICLE_ASSIGNMENT_COLUMNS = {
 	"street": "Straße / Hausnummer",
 	"dreiachser": "Aufträge Dreiachser",
 	"sattelzug": "Aufträge Sattelzug",
+	"saved_vehicle_type": "Geschpeicherte Fahrzeugart",
 }
 DEFAULT_VEHICLE_ASSIGNMENT_PATH = Path(__file__).resolve().parent / "data" / "Auftragfahrzeugart.xlsx"
 
@@ -109,14 +110,28 @@ def _normalize_match_value(value: object) -> str:
 	return re.sub(r"\s+", " ", text)
 
 
+def _vehicle_assignment_key(country: object, postal_code: object, city: object, street: object) -> tuple[str, ...]:
+	country_key = _normalize_match_value(country)
+	return (
+		country_key,
+		normalize_postal_code(_normalize_match_value(postal_code), country_key),
+		_normalize_match_value(city),
+		_normalize_match_value(street),
+	)
+
+
 def load_vehicle_assignments(path: Path | None = None) -> pd.DataFrame:
 	"""Load and aggregate recipient vehicle counts from the assignment workbook."""
 	if path is None:
 		path = DEFAULT_VEHICLE_ASSIGNMENT_PATH
 	assignments = pd.read_excel(path, dtype=object, keep_default_na=False)
-	missing = set(VEHICLE_ASSIGNMENT_COLUMNS.values()) - set(assignments.columns)
+	saved_vehicle_type_column = VEHICLE_ASSIGNMENT_COLUMNS["saved_vehicle_type"]
+	required_columns = set(VEHICLE_ASSIGNMENT_COLUMNS.values()) - {saved_vehicle_type_column}
+	missing = required_columns - set(assignments.columns)
 	if missing:
 		raise ValueError(f"Fehlende Spalten in Fahrzeugart-Tabelle: {', '.join(sorted(missing))}")
+	if saved_vehicle_type_column not in assignments:
+		assignments[saved_vehicle_type_column] = ""
 
 	key_columns = [VEHICLE_ASSIGNMENT_COLUMNS[name] for name in ("country", "postal_code", "city", "street")]
 	for column in key_columns:
@@ -129,9 +144,86 @@ def load_vehicle_assignments(path: Path | None = None) -> pd.DataFrame:
 	]
 	for column in (VEHICLE_ASSIGNMENT_COLUMNS["dreiachser"], VEHICLE_ASSIGNMENT_COLUMNS["sattelzug"]):
 		assignments[column] = pd.to_numeric(assignments[column], errors="coerce")
-	return assignments.groupby(key_columns, as_index=False, dropna=False)[
+	counts = assignments.groupby(key_columns, as_index=False, dropna=False)[
 		[VEHICLE_ASSIGNMENT_COLUMNS["dreiachser"], VEHICLE_ASSIGNMENT_COLUMNS["sattelzug"]]
 	].sum(min_count=1)
+	saved_types = assignments.groupby(key_columns, as_index=False, dropna=False)[saved_vehicle_type_column].agg(
+		lambda values: next((str(value).strip() for value in values if str(value).strip()), "")
+	)
+	return counts.merge(saved_types, on=key_columns, how="left")
+
+
+def save_vehicle_assignment(
+	order: pd.Series,
+	vehicle_type: str,
+	path: Path | None = None,
+) -> bool:
+	"""Remember a recipient's vehicle type in the shared assignment workbook.
+
+	Return True when a recipient row was added, or False when an existing row was updated.
+	"""
+	if path is None:
+		path = DEFAULT_VEHICLE_ASSIGNMENT_PATH
+	vehicle_type = vehicle_type.strip()
+	if not vehicle_type:
+		raise ValueError("Wählen Sie zuerst eine Fahrzeugart aus.")
+
+	country = order.get("Empf-LKZ", "D")
+	postal_code = order.get("PLZ", order.get("Empfänger-PLZ", ""))
+	city = order.get("Ort", order.get("Empfänger-Ort", ""))
+	street = order.get("Straße", order.get("Straße / Hausnummer", ""))
+	key = _vehicle_assignment_key(country, postal_code, city, street)
+	if not all(key[1:]):
+		raise ValueError("Zum Merken werden Empfänger-PLZ, Ort und Straße benötigt.")
+
+	assignments = pd.read_excel(path, dtype=object, keep_default_na=False)
+	saved_vehicle_type_column = VEHICLE_ASSIGNMENT_COLUMNS["saved_vehicle_type"]
+	required_columns = set(VEHICLE_ASSIGNMENT_COLUMNS.values()) - {saved_vehicle_type_column}
+	missing = required_columns - set(assignments.columns)
+	if missing:
+		raise ValueError(f"Fehlende Spalten in Fahrzeugart-Tabelle: {', '.join(sorted(missing))}")
+	if saved_vehicle_type_column not in assignments:
+		assignments[saved_vehicle_type_column] = ""
+
+	key_columns = [VEHICLE_ASSIGNMENT_COLUMNS[name] for name in ("country", "postal_code", "city", "street")]
+	assignment_keys = assignments.apply(
+		lambda row: _vehicle_assignment_key(*(row[column] for column in key_columns)),
+		axis=1,
+	)
+	matching_rows = assignment_keys.map(lambda assignment_key: assignment_key == key)
+	added = not matching_rows.any()
+	if added:
+		new_row = {column: "" for column in assignments.columns}
+		new_row.update({
+			VEHICLE_ASSIGNMENT_COLUMNS["country"]: country,
+			VEHICLE_ASSIGNMENT_COLUMNS["postal_code"]: postal_code,
+			VEHICLE_ASSIGNMENT_COLUMNS["city"]: city,
+			VEHICLE_ASSIGNMENT_COLUMNS["street"]: street,
+			VEHICLE_ASSIGNMENT_COLUMNS["dreiachser"]: 0,
+			VEHICLE_ASSIGNMENT_COLUMNS["sattelzug"]: 0,
+			saved_vehicle_type_column: vehicle_type,
+		})
+		assignments = pd.concat([assignments, pd.DataFrame([new_row])], ignore_index=True)
+	else:
+		assignments.loc[matching_rows, saved_vehicle_type_column] = vehicle_type
+
+	path.parent.mkdir(parents=True, exist_ok=True)
+	temporary_path: str | None = None
+	try:
+		with tempfile.NamedTemporaryFile(
+			dir=path.parent,
+			prefix=f".{path.stem}-",
+			suffix=path.suffix,
+			delete=False,
+		) as temporary_file:
+			temporary_path = temporary_file.name
+		assignments.to_excel(temporary_path, index=False)
+		os.replace(temporary_path, path)
+		temporary_path = None
+	finally:
+		if temporary_path is not None:
+			Path(temporary_path).unlink(missing_ok=True)
+	return added
 
 
 def vehicle_assignment_counts(order: pd.Series, path: Path | None = None) -> tuple[object, object]:
@@ -173,6 +265,11 @@ def _vehicle_type_for_order(
 	if len(matches) != 1:
 		return ""
 	row = matches.iloc[0]
+	saved_vehicle_type_column = VEHICLE_ASSIGNMENT_COLUMNS["saved_vehicle_type"]
+	if saved_vehicle_type_column in row:
+		saved_vehicle_type = str(row[saved_vehicle_type_column]).strip()
+		if saved_vehicle_type:
+			return saved_vehicle_type
 	dreiachser = row[VEHICLE_ASSIGNMENT_COLUMNS["dreiachser"]]
 	sattelzug = row[VEHICLE_ASSIGNMENT_COLUMNS["sattelzug"]]
 	if pd.isna(dreiachser) or pd.isna(sattelzug):

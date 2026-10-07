@@ -21,6 +21,7 @@ from order_import import (
     normalize_order_postal_codes,
     normalize_postal_code,
     parse_pasted_orders,
+    save_vehicle_assignment,
     save_orders,
     QUANTITY_THRESHOLD_OVERRIDE_COLUMN,
     update_quantity_threshold_exclusion,
@@ -176,6 +177,8 @@ def test_order_table_vehicle_filter_uses_configured_vehicle_types() -> None:
     assert 'vehicle_types = list(load_settings(settings_path)["vehicles"])' in page_source
     assert "vehicle_types=vehicle_types" in page_source
     assert 'args.vehicle_types || []' in component_source
+    assert 'type: "remember_vehicle_type"' in component_source
+    assert "save_vehicle_assignment(orders.iloc[row_index], vehicle_type)" in page_source
     assert 'vehicleType || "Nicht zugewiesen"' in component_source
     assert 'render({ rows: state.rows, vehicle_types: state.vehicleTypes.slice(0, -1) });' in component_source
 
@@ -424,6 +427,58 @@ def test_pasted_orders_assign_vehicle_type_from_recipient_table(monkeypatch, tmp
     )
 
     assert orders["Fahrzeugart"].tolist() == ["Sattelzug", "Dreiachser", "", "Sattelzug", ""]
+
+
+def test_saved_vehicle_type_overrides_assignment_counts(monkeypatch, tmp_path: Path) -> None:
+    assignment_path = tmp_path / "Auftragfahrzeugart.xlsx"
+    pd.DataFrame(
+        {
+            "Empfänger-LKZ": ["D"],
+            "Empfänger-PLZ": ["12345"],
+            "Empfänger-Ort": ["Berlin"],
+            "Straße / Hausnummer": ["Alpha 1"],
+            "Aufträge Dreiachser": [4],
+            "Aufträge Sattelzug": [0],
+            "Geschpeicherte Fahrzeugart": ["Sattelzug"],
+        }
+    ).to_excel(assignment_path, index=False)
+    monkeypatch.setattr("order_import.DEFAULT_VEHICLE_ASSIGNMENT_PATH", assignment_path)
+
+    orders = parse_pasted_orders(
+        "Termin bis\tEmpf-LKZ\tEmpf-Plz\tEmpf-Ort\tEmpf-Straße\tAnzahl\n"
+        "23.09.2026\tD\t12345\tBerlin\tAlpha 1\t1"
+    )
+
+    assert orders.loc[0, "Fahrzeugart"] == "Sattelzug"
+
+
+def test_remember_vehicle_assignment_updates_or_adds_shared_rows(tmp_path: Path) -> None:
+    assignment_path = tmp_path / "Auftragfahrzeugart.xlsx"
+    pd.DataFrame(
+        {
+            "Empfänger-LKZ": ["D"],
+            "Empfänger-PLZ": ["12345"],
+            "Empfänger-Ort": ["Berlin"],
+            "Straße / Hausnummer": ["Alpha 1"],
+            "Aufträge Dreiachser": [4],
+            "Aufträge Sattelzug": [0],
+        }
+    ).to_excel(assignment_path, index=False)
+
+    existing_order = pd.Series(
+        {"Empf-LKZ": "D", "PLZ": "12345", "Ort": "Berlin", "Straße": "Alpha 1"}
+    )
+    new_order = pd.Series(
+        {"Empf-LKZ": "D", "PLZ": "54321", "Ort": "Hamburg", "Straße": "Beta 2"}
+    )
+
+    assert save_vehicle_assignment(existing_order, "Sattelzug", assignment_path) is False
+    assert save_vehicle_assignment(new_order, "Dreiachser", assignment_path) is True
+
+    assignments = pd.read_excel(assignment_path, dtype={"Empfänger-PLZ": "string"})
+    assert assignments["Geschpeicherte Fahrzeugart"].tolist() == ["Sattelzug", "Dreiachser"]
+    assert assignments.loc[1, "Aufträge Dreiachser"] == 0
+    assert assignments.loc[1, "Aufträge Sattelzug"] == 0
 
 
 def test_pasted_orders_match_assignment_postal_codes_with_dropped_leading_zero(monkeypatch, tmp_path: Path) -> None:

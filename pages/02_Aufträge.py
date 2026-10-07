@@ -24,6 +24,7 @@ from order_import import (
 	apply_default_quantity_exclusions,
 	QUANTITY_THRESHOLD_OVERRIDE_COLUMN,
 	update_quantity_threshold_exclusion,
+	save_vehicle_assignment,
 )
 
 
@@ -154,6 +155,16 @@ def render_orders_table() -> pd.DataFrame:
 				if component_action.get("type") == "delete":
 					orders = orders.drop(index=row_index).reset_index(drop=True)
 					save_orders(orders, orders_path)
+				elif component_action.get("type") == "remember_vehicle_type":
+					vehicle_type = component_action.get("value")
+					if isinstance(vehicle_type, str):
+						try:
+							added = save_vehicle_assignment(orders.iloc[row_index], vehicle_type)
+						except (OSError, ValueError) as error:
+							st.error(f"Fahrzeugart konnte nicht gespeichert werden: {error}")
+						else:
+							location = "neu hinzugefügt" if added else "aktualisiert"
+							st.success(f"Fahrzeugart „{vehicle_type}“ für diesen Empfänger {location}.")
 				elif component_action.get("type") == "edit":
 					column = component_action.get("column")
 					value = component_action.get("value", "")
