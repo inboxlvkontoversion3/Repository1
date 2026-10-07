@@ -76,6 +76,75 @@ def test_large_constrained_route_tries_alternative_first_stops() -> None:
 	assert routing._route_cost(route, durations) == 6
 
 
+def test_route_alternatives_prioritize_useful_diversity() -> None:
+	durations = [[0 if first == second else 1 for second in range(6)] for first in range(6)]
+
+	routes = routing.optimize_route_alternatives(durations, max_routes=4)
+
+	assert routes[0] == [0, 1, 2, 3, 4, 5, 0]
+	assert len(routes) == 4
+	assert len({tuple(route) for route in routes}) == len(routes)
+	assert all(
+		routing._route_order_distance(route, other, {}) >= routing.MIN_ALTERNATIVE_DISTINCTNESS
+		for index, route in enumerate(routes[1:], start=1)
+		for other in routes[:index]
+	)
+	assert all(routing._route_cost(route, durations) == 6 for route in routes)
+
+
+def test_route_usefulness_penalizes_time_regret() -> None:
+	durations = [[0 if first == second else 1 for second in range(5)] for first in range(5)]
+	best = [0, 1, 2, 3, 4, 0]
+	distinct_but_slower = [0, 3, 4, 1, 2, 0]
+	durations[0][3] = 6
+	durations[3][0] = 6
+
+	assert routing.route_usefulness(distinct_but_slower, [best], durations) < 0
+
+
+def test_route_order_distance_grows_with_broader_order_changes() -> None:
+	best = [0, 1, 2, 3, 4, 5, 0]
+	small_swap = [0, 2, 1, 3, 4, 5, 0]
+	reversed_order = [0, 5, 4, 3, 2, 1, 0]
+
+	assert routing._route_order_distance(small_swap, best, {}) == 0.1
+	assert routing._route_order_distance(reversed_order, best, {}) == 1.0
+
+
+def test_route_alternatives_preserve_pinned_positions() -> None:
+	durations = [[0 if first == second else 1 for second in range(6)] for first in range(6)]
+
+	routes = routing.optimize_route_alternatives(
+		durations,
+		fixed_positions={2: 2},
+		max_routes=3,
+	)
+
+	assert all(route[2] == 2 for route in routes)
+
+
+def test_large_route_alternatives_preserve_pinned_positions() -> None:
+	count = 10
+	durations = [
+		[0 if first == second else abs(first - second) for second in range(count)]
+		for first in range(count)
+	]
+
+	routes = routing.optimize_route_alternatives(
+		durations,
+		fixed_positions={1: 3, 8: 7},
+		max_routes=3,
+		time_limit_seconds=0.1,
+	)
+
+	assert len(routes) == 3
+	for route in routes:
+		assert route[0] == route[-1] == 0
+		assert sorted(route[1:-1]) == list(range(1, count))
+		assert route[3] == 1
+		assert route[7] == 8
+
+
 def test_large_route_contains_every_stop_once() -> None:
 	count = 12
 	durations = [[0 if first == second else abs(first - second) for second in range(count)] for first in range(count)]

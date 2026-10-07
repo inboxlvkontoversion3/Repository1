@@ -8,6 +8,16 @@ from math import exp, log
 import pandas as pd
 
 
+def stop_position_color(position: int, stop_count: int) -> str:
+    """Return a red-to-green color based on a stop's 1-based route position."""
+    start = (220, 38, 38)
+    end = (22, 163, 74)
+    progress = 0.0 if stop_count <= 1 else (position - 1) / (stop_count - 1)
+    progress = max(0.0, min(1.0, progress))
+    channels = [round(first + progress * (last - first)) for first, last in zip(start, end)]
+    return "#" + "".join(f"{channel:02x}" for channel in channels)
+
+
 def scale_quantity_to_radius(
     quantity: float,
     quantity_min: float,

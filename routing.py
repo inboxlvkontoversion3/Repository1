@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from hashlib import sha256
-from itertools import combinations, permutations
+from itertools import combinations, permutations, product
 from json import dumps, loads
 from math import asin, cos, isfinite, radians, sin, sqrt
 from time import monotonic
@@ -16,6 +16,9 @@ from urllib.request import Request, urlopen
 DEFAULT_OSRM_ENDPOINT = "https://router.project-osrm.org"
 OSRM_TIMEOUT_SECONDS = 6
 EXACT_STOP_LIMIT = 10
+MAX_ALTERNATIVE_ROUTES = 4
+MAX_ALTERNATIVE_CANDIDATES = 64
+MIN_ALTERNATIVE_DISTINCTNESS = 0.15
 
 
 class RoutingError(RuntimeError):
@@ -152,25 +155,168 @@ def _constrained_nearest_neighbor(
 	straight_line: list[list[float]],
 	fixed_positions: dict[int, int],
 	first_stop: int | None = None,
+	second_stop: int | None = None,
 ) -> list[int]:
 	stop_count = len(matrix) - 1
 	ordered_stops: dict[int, int] = {position: stop for stop, position in fixed_positions.items()}
-	remaining = set(range(1, len(matrix))) - set(fixed_positions)
+	free_positions = [position for position in range(1, stop_count + 1) if position not in ordered_stops]
+	forced_stops = {}
+	if free_positions and first_stop is not None:
+		forced_stops[free_positions[0]] = first_stop
+	if len(free_positions) > 1 and second_stop is not None:
+		forced_stops[free_positions[1]] = second_stop
+	ordered_stops.update(forced_stops)
+	remaining = set(range(1, len(matrix))) - set(ordered_stops.values())
 	current = 0
-	first_free_position = min(
-		(position for position in range(1, stop_count + 1) if position not in ordered_stops),
-		default=None,
-	)
 	for position in range(1, stop_count + 1):
 		if position not in ordered_stops:
-			if position == first_free_position and first_stop is not None:
-				next_stop = first_stop
-			else:
-				next_stop = min(remaining, key=lambda stop: (matrix[current][stop], straight_line[current][stop], stop))
+			next_stop = min(remaining, key=lambda stop: (matrix[current][stop], straight_line[current][stop], stop))
 			ordered_stops[position] = next_stop
 			remaining.remove(next_stop)
 		current = ordered_stops[position]
 	return [0, *(ordered_stops[position] for position in range(1, stop_count + 1)), 0]
+
+
+def _route_order_distance(first: list[int], second: list[int], fixed_positions: dict[int, int]) -> float:
+	"""Return normalized Kendall distance between the unlocked stops in two routes."""
+	fixed_stops = set(fixed_positions)
+	first_order = [stop for stop in first[1:-1] if stop not in fixed_stops]
+	first_positions = {stop: position for position, stop in enumerate(first_order)}
+	second_positions = {stop: position for position, stop in enumerate(second[1:-1]) if stop not in fixed_stops}
+	pairs = list(combinations(first_order, 2))
+	if not pairs:
+		return 0.0
+	disagreements = sum(
+		(first_positions[first_stop] < first_positions[second_stop])
+		!= (second_positions[first_stop] < second_positions[second_stop])
+		for first_stop, second_stop in pairs
+	)
+	return disagreements / len(pairs)
+
+
+def route_usefulness(
+	candidate: list[int],
+	selected_routes: list[list[int]],
+	duration_matrix: list[list[float]],
+	fixed_positions: dict[int, int] | None = None,
+) -> float:
+	"""Score candidate distinctness against selected routes minus its relative time regret."""
+	if not selected_routes:
+		return 0.0
+	fixed_positions = _validate_fixed_positions(fixed_positions, len(duration_matrix) - 1)
+	distinctness = min(
+		_route_order_distance(candidate, selected, fixed_positions)
+		for selected in selected_routes
+	)
+	best_duration = min(_route_cost(route, duration_matrix) for route in selected_routes)
+	candidate_duration = _route_cost(candidate, duration_matrix)
+	time_regret = max(0.0, (candidate_duration - best_duration) / max(best_duration, 1.0))
+	return distinctness - time_regret
+
+
+def optimize_route_alternatives(
+	duration_matrix: list[list[float]],
+	straight_line_matrix: list[list[float]] | None = None,
+	fixed_positions: dict[int, int] | None = None,
+	max_routes: int = MAX_ALTERNATIVE_ROUTES,
+	time_limit_seconds: float = 2.0,
+) -> list[list[int]]:
+	"""Return the best route and useful, distinct alternatives ranked by travel time."""
+	_validate_matrix(duration_matrix)
+	if len(duration_matrix) == 1:
+		return [[0, 0]]
+	if straight_line_matrix is None:
+		straight_line_matrix = duration_matrix
+	_validate_matrix(straight_line_matrix)
+	if len(straight_line_matrix) != len(duration_matrix):
+		raise RoutingError("OSRM hat keine übereinstimmenden Kostenmatrizen geliefert.")
+	if max_routes < 1:
+		raise RoutingError("Mindestens eine Routenoption muss angefordert werden.")
+	fixed_positions = _validate_fixed_positions(fixed_positions, len(duration_matrix) - 1)
+	deadline = monotonic() + max(0.01, time_limit_seconds)
+	candidates: dict[tuple[int, ...], float] = {}
+
+	def add_candidate(route: list[int]) -> None:
+		route_key = tuple(route)
+		candidates[route_key] = _route_cost(route, duration_matrix)
+
+	free_stops = [stop for stop in range(1, len(duration_matrix)) if stop not in fixed_positions]
+	if len(free_stops) <= 7:
+		fixed_by_position = {position: stop for stop, position in fixed_positions.items()}
+		free_positions = [position for position in range(1, len(duration_matrix)) if position not in fixed_by_position]
+		for free_order in permutations(free_stops):
+			ordered_stops = dict(fixed_by_position)
+			ordered_stops.update(zip(free_positions, free_order))
+			add_candidate([0, *(ordered_stops[position] for position in range(1, len(duration_matrix))), 0])
+	else:
+		baseline_budget = min(0.35, max(0.01, time_limit_seconds * 0.2))
+		add_candidate(optimize_route(
+			duration_matrix,
+			straight_line_matrix,
+			fixed_positions,
+			time_limit_seconds=baseline_budget,
+		))
+		free_positions = [position for position in range(1, len(duration_matrix)) if position not in fixed_positions.values()]
+		first_free_position = free_positions[0] if free_positions else None
+		previous_stop = 0 if first_free_position in (None, 1) else next(
+			stop for stop, position in fixed_positions.items() if position == first_free_position - 1
+		)
+		seed_pairs = list(product(free_stops, repeat=2)) if len(free_positions) > 1 else [(stop, None) for stop in free_stops]
+		seed_pairs = [
+			(first, second) for first, second in seed_pairs
+			if first != second
+		] if len(free_positions) > 1 else seed_pairs
+		seed_pairs.sort(
+			key=lambda pair: (
+				duration_matrix[previous_stop][pair[0]]
+				+ (duration_matrix[pair[0]][pair[1]] if pair[1] is not None else 0),
+				pair[0],
+				pair[1] or 0,
+			)
+		)
+		seed_pairs = seed_pairs[:MAX_ALTERNATIVE_CANDIDATES]
+		for seed_index, (first_stop, second_stop) in enumerate(seed_pairs):
+			if monotonic() >= deadline:
+				break
+			time_left = deadline - monotonic()
+			seeds_left = len(seed_pairs) - seed_index
+			seed_deadline = monotonic() + time_left / seeds_left
+			candidate = _constrained_nearest_neighbor(
+				duration_matrix,
+				straight_line_matrix,
+				fixed_positions,
+				first_stop=first_stop,
+				second_stop=second_stop,
+			)
+			candidate = _constrained_two_opt(candidate, duration_matrix, fixed_positions, seed_deadline)
+			add_candidate(candidate)
+
+	ranked_candidates = sorted(
+		(list(route) for route in candidates),
+		key=lambda route: (candidates[tuple(route)], tuple(route)),
+	)
+	if not ranked_candidates:
+		return [optimize_route(duration_matrix, straight_line_matrix, fixed_positions)]
+	selected = [ranked_candidates[0]]
+	while len(selected) < max_routes:
+		best_alternative: list[int] | None = None
+		best_usefulness = float("-inf")
+		for candidate in ranked_candidates[1:]:
+			if candidate in selected:
+				continue
+			distinctness = min(
+				_route_order_distance(candidate, chosen, fixed_positions)
+				for chosen in selected
+			)
+			if distinctness < MIN_ALTERNATIVE_DISTINCTNESS:
+				continue
+			usefulness = route_usefulness(candidate, selected, duration_matrix, fixed_positions)
+			if usefulness > best_usefulness:
+				best_alternative, best_usefulness = candidate, usefulness
+		if best_alternative is None or best_usefulness <= 0:
+			break
+		selected.append(best_alternative)
+	return selected
 
 
 def _constrained_two_opt(route: list[int], matrix: list[list[float]], fixed_positions: dict[int, int], deadline: float) -> list[int]:

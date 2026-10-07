@@ -13,6 +13,7 @@ from folium.template import Template
 from streamlit_folium import st_folium
 
 from config import has_valid_selected_vehicle, load_settings
+from map_utils import stop_position_color
 from profiles import get_profile_paths
 from order_import import (
 	GEOCODING_STATUS_COLUMN,
@@ -27,7 +28,7 @@ from routing import (
 	fetch_osrm_route,
 	fetch_osrm_table,
 	haversine_matrix,
-	optimize_route,
+	optimize_route_alternatives,
 	route_signature,
 )
 
@@ -68,7 +69,14 @@ def show_order_details(order_index: object) -> None:
 	excluded_columns = {"Breite", "Länge", GEOCODING_STATUS_COLUMN}
 	for column, value in order.items():
 		if column not in excluded_columns:
-			st.write(f"**{column}:** {format_value(value)}")
+			display_column = column
+			display_value = format_value(value)
+			if column == "Komplettourgrenze automatisch":
+				display_column = "Komplettour"
+				display_value = "Ja" if str(value).strip().lower() in {"true", "1", "ja"} else "Nein"
+			elif column == "Filterübersteuerung" and not display_value.strip():
+				display_value = "Keine"
+			st.write(f"**{display_column}:** {display_value}")
 	st.write(f"**Aufträge Dreiachser:** {format_value(dreiachser)}")
 	st.write(f"**Aufträge Sattelzug:** {format_value(sattelzug)}")
 
@@ -145,8 +153,6 @@ signature_stops.extend(
 	(index, latitude, longitude)
 	for index, (latitude, longitude) in zip(active_orders.index, points[1:])
 )
-base_signature = route_signature(signature_stops, endpoint)
-
 expected_route_stops = set(range(1, len(active_orders) + 1))
 manual_route = st.session_state.get("reihenfolge_manual_route")
 if manual_route and set(manual_route) != expected_route_stops:
@@ -162,6 +168,11 @@ if len(set(pinned_positions.values())) != len(pinned_positions):
 	pinned_positions = {}
 	st.session_state["reihenfolge_pinned_positions"] = pinned_positions
 
+base_signature = route_signature(signature_stops, endpoint)
+route_choice_key = (
+	f"reihenfolge_alternative_{st.session_state['active_profile_id']}_{base_signature}"
+)
+
 cached_result = st.session_state.get("reihenfolge_route_result")
 if cached_result and (
 	cached_result.get("signature") != base_signature
@@ -174,34 +185,100 @@ if st.button("Reihenfolge optimieren", type="primary"):
 	st.session_state.pop("reihenfolge_manual_route", None)
 	cached_result = None
 	st.session_state.pop("reihenfolge_route_result", None)
+	st.session_state[route_choice_key] = 0
 	st.rerun()
 
 if cached_result is None:
 	with st.spinner("Fahrzeiten werden abgerufen und die Reihenfolge wird berechnet ..."):
 		try:
 			if manual_route:
-				route = [0, *manual_route, 0]
+				alternatives = [[0, *manual_route, 0]]
+				duration_matrix = None
+				distance_matrix = None
 			else:
-				duration_matrix, _distance_matrix = fetch_osrm_table(points, endpoint=endpoint)
+				duration_matrix, distance_matrix = fetch_osrm_table(points, endpoint=endpoint)
 				straight_line_matrix = haversine_matrix(points)
-				route = optimize_route(
+				alternatives = optimize_route_alternatives(
 					duration_matrix,
 					straight_line_matrix,
 					fixed_positions=pinned_positions,
 				)
+			route = alternatives[0]
 			route_geometry = fetch_osrm_route([points[index] for index in route], endpoint=endpoint)
 		except RoutingError as error:
 			st.error(f"Die Route konnte nicht berechnet werden: {error}")
 			st.stop()
+		if duration_matrix is not None and distance_matrix is not None:
+			alternative_metrics = [
+				{
+					"duration_s": sum(duration_matrix[first][second] for first, second in zip(candidate, candidate[1:])),
+					"distance_m": sum(distance_matrix[first][second] for first, second in zip(candidate, candidate[1:])),
+				}
+				for candidate in alternatives
+			]
+		else:
+			alternative_metrics = [{"duration_s": route_geometry.duration_s, "distance_m": route_geometry.distance_m}]
 		cached_result = {
 			"signature": base_signature,
 			"route": route,
+			"alternatives": alternatives,
+			"alternative_metrics": alternative_metrics,
+			"selected_alternative": 0,
 			"geometry": route_geometry.coordinates,
 			"leg_geometry": route_geometry.leg_coordinates,
 			"distance_m": route_geometry.distance_m,
 			"duration_s": route_geometry.duration_s,
 		}
 		st.session_state["reihenfolge_route_result"] = cached_result
+
+alternatives = cached_result.get("alternatives") or [cached_result["route"]]
+alternative_metrics = cached_result.get("alternative_metrics") or [
+	{"duration_s": cached_result["duration_s"], "distance_m": cached_result["distance_m"]}
+]
+selected_alternative = st.session_state.get(route_choice_key, cached_result.get("selected_alternative", 0))
+if not isinstance(selected_alternative, int) or not 0 <= selected_alternative < len(alternatives):
+	selected_alternative = 0
+	st.session_state[route_choice_key] = selected_alternative
+if len(alternatives) > 1:
+	best_duration = alternative_metrics[0]["duration_s"]
+
+	def alternative_label(index: int) -> str:
+		metric = alternative_metrics[index]
+		truck_minutes = format_duration(metric["duration_s"] * TRUCK_DRIVING_TIME_FACTOR)
+		distance_km = metric["distance_m"] / 1000
+		if index == 0:
+			return f"Beste Fahrzeit · {truck_minutes} · {distance_km:.1f} km"
+		overhead_percent = (metric["duration_s"] - best_duration) / max(best_duration, 1) * 100
+		return (
+			f"Alternative {index} · {truck_minutes} · {distance_km:.1f} km"
+			f" · +{overhead_percent:.1f}% Fahrzeit"
+		)
+
+	selected_alternative = st.selectbox(
+		"Routenvorschlag",
+		options=range(len(alternatives)),
+		index=selected_alternative,
+		format_func=alternative_label,
+		key=route_choice_key,
+	)
+	if selected_alternative != cached_result.get("selected_alternative", 0):
+		try:
+			route = alternatives[selected_alternative]
+			route_geometry = fetch_osrm_route([points[index] for index in route], endpoint=endpoint)
+		except RoutingError as error:
+			st.error(f"Die ausgewählte Route konnte nicht geladen werden: {error}")
+			st.stop()
+		cached_result.update({
+			"route": route,
+			"selected_alternative": selected_alternative,
+			"geometry": route_geometry.coordinates,
+			"leg_geometry": route_geometry.leg_coordinates,
+			"distance_m": route_geometry.distance_m,
+			"duration_s": route_geometry.duration_s,
+		})
+		st.session_state["reihenfolge_route_result"] = cached_result
+else:
+	st.session_state[route_choice_key] = selected_alternative
 
 route = cached_result["route"]
 route_geometry = cached_result["geometry"]
@@ -271,38 +348,38 @@ with left_column:
 			):
 				st.session_state["reihenfolge_last_action_id"] = action_id
 				show_order_details(active_orders.index[component_action["point_index"] - 1])
-				st.stop()
-			new_order = component_action.get("order")
-			new_pinned = component_action.get("pinned", [])
-			if (
-				isinstance(new_order, list)
-				and set(new_order) == expected_route_stops
-				and len(new_order) == len(expected_route_stops)
-				and isinstance(new_pinned, list)
-				and all(stop in expected_route_stops for stop in new_pinned)
-			):
-				st.session_state["reihenfolge_last_action_id"] = action_id
-				st.session_state["reihenfolge_pinned_positions"] = {
-					stop: position for position, stop in enumerate(new_order, start=1) if stop in new_pinned
-				}
-				if component_action.get("type") == "drag":
-					st.session_state["reihenfolge_manual_route"] = new_order
-					try:
-						route_geometry = fetch_osrm_route(
-							[points[index] for index in [0, *new_order, 0]], endpoint=endpoint
-						)
-					except RoutingError as error:
-						st.error(f"Die Route konnte nicht berechnet werden: {error}")
-						st.stop()
-					st.session_state["reihenfolge_route_result"] = {
-						"signature": base_signature,
-						"route": [0, *new_order, 0],
-						"geometry": route_geometry.coordinates,
-						"leg_geometry": route_geometry.leg_coordinates,
-						"distance_m": route_geometry.distance_m,
-						"duration_s": route_geometry.duration_s,
+			else:
+				new_order = component_action.get("order")
+				new_pinned = component_action.get("pinned", [])
+				if (
+					isinstance(new_order, list)
+					and set(new_order) == expected_route_stops
+					and len(new_order) == len(expected_route_stops)
+					and isinstance(new_pinned, list)
+					and all(stop in expected_route_stops for stop in new_pinned)
+				):
+					st.session_state["reihenfolge_last_action_id"] = action_id
+					st.session_state["reihenfolge_pinned_positions"] = {
+						stop: position for position, stop in enumerate(new_order, start=1) if stop in new_pinned
 					}
-				st.rerun()
+					if component_action.get("type") == "drag":
+						st.session_state["reihenfolge_manual_route"] = new_order
+						try:
+							route_geometry = fetch_osrm_route(
+								[points[index] for index in [0, *new_order, 0]], endpoint=endpoint
+							)
+						except RoutingError as error:
+							st.error(f"Die Route konnte nicht berechnet werden: {error}")
+							st.stop()
+						st.session_state["reihenfolge_route_result"] = {
+							"signature": base_signature,
+							"route": [0, *new_order, 0],
+							"geometry": route_geometry.coordinates,
+							"leg_geometry": route_geometry.leg_coordinates,
+							"distance_m": route_geometry.distance_m,
+							"duration_s": route_geometry.duration_s,
+						}
+					st.rerun()
 
 with map_column:
 	st.subheader("Karte")
@@ -355,9 +432,11 @@ with map_column:
 		dash_array=[12, 20],
 		delay=900,
 	).add_to(route_layers)
+	stop_count = len(route) - 2
 	for position, point_index in enumerate(route[1:-1], start=2):
 		latitude, longitude = points[point_index]
 		order = active_orders.iloc[point_index - 1]
+		marker_color = stop_position_color(position - 1, stop_count)
 		popup_html = (
 			f"<div><strong>Stopp {position}</strong><br>"
 			f"<strong>Adresse:</strong> {escape(format_value(order['PLZ']))} "
@@ -375,7 +454,7 @@ with map_column:
 		folium.Marker(
 			location=[latitude, longitude],
 			icon=folium.DivIcon(
-				html=f'<div style="background:#1d4ed8;color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:22px;font-weight:700">{position}</div>'
+				html=f'<div style="background:{marker_color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:22px;font-weight:700">{position}</div>'
 			),
 			popup=popup,
 		).add_to(route_layers)

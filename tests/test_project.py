@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 import pandas as pd
 
 from config import DEFAULT_SETTINGS, has_valid_selected_vehicle, load_settings, save_settings
-from map_utils import filter_orders, scale_quantity_to_radius
+from map_utils import filter_orders, scale_quantity_to_radius, stop_position_color
 from order_import import (
     GEOCODING_STATUS_COLUMN,
     GEOCODING_STATUS_NOT_FOUND,
@@ -29,6 +29,12 @@ from order_import import (
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PAGES_DIR = PROJECT_ROOT / "pages"
+
+
+def test_stop_position_colors_progress_from_red_to_green() -> None:
+    assert stop_position_color(1, 3) == "#dc2626"
+    assert stop_position_color(2, 3) == "#796438"
+    assert stop_position_color(3, 3) == "#16a34a"
 
 
 def test_pages_include_filtered_orders_and_tour_generation() -> None:
@@ -70,16 +76,75 @@ def test_order_page_resets_pins_when_active_tours_change() -> None:
 def test_route_order_uses_osrm_travel_times() -> None:
     page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
 
-    assert "duration_matrix, _distance_matrix = fetch_osrm_table(points, endpoint=endpoint)" in page_source
-    assert "route = optimize_route(\n\t\t\t\t\tduration_matrix," in page_source
+    assert "duration_matrix, distance_matrix = fetch_osrm_table(points, endpoint=endpoint)" in page_source
+    assert "alternatives = optimize_route_alternatives(\n\t\t\t\t\tduration_matrix," in page_source
 
 
 def test_route_page_displays_truck_adjusted_estimated_driving_time() -> None:
     page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
 
     assert "TRUCK_DRIVING_TIME_FACTOR = 1.2" in page_source
-    assert "Geschätzte Fahrzeit (LKW, ×1,2):" in page_source
+    assert "Geschätzte Fahrzeit:" in page_source
     assert "cached_result['duration_s'] * TRUCK_DRIVING_TIME_FACTOR" in page_source
+
+
+def test_route_page_allows_selecting_generated_alternatives() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+
+    assert "optimize_route_alternatives(" in page_source
+    assert 'st.selectbox(\n\t\t"Routenvorschlag"' in page_source
+    assert '"selected_alternative": selected_alternative' in page_source
+    assert "fetch_osrm_route([points[index] for index in route], endpoint=endpoint)" in page_source
+
+
+def test_pin_changes_do_not_invalidate_route_calculation_cache() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+
+    assert "base_signature = route_signature(signature_stops, endpoint)" in page_source
+    assert 'signature_stops + [("fixed", stop, position)' not in page_source
+    assert 'if cached_result and (' in page_source
+    assert 'cached_result.get("signature") != base_signature' in page_source
+    assert 'st.session_state.pop("reihenfolge_route_result", None)' in page_source
+    assert 'if st.button("Reihenfolge optimieren", type="primary"):' in page_source
+
+
+def test_order_info_dialog_does_not_stop_page_before_rendering_map() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+    action_handler = page_source[
+        page_source.index("if isinstance(component_action, dict):"):
+        page_source.index("\nwith map_column:")
+    ]
+    info_handler = action_handler[
+        action_handler.index('component_action.get("type") == "info"'):
+        action_handler.index("\n\t\t\telse:")
+    ]
+
+    assert "show_order_details(" in info_handler
+    assert "st.stop()" not in info_handler
+    assert "st_folium(" in page_source[page_source.index("\nwith map_column:"):]
+
+
+def test_order_info_popup_displays_whole_tour_as_yes_or_no() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+    dialog_source = page_source[
+        page_source.index("def show_order_details("):
+        page_source.index("\n\nclass DynamicAntPath")
+    ]
+
+    assert 'if column == "Komplettourgrenze automatisch":' in dialog_source
+    assert 'display_column = "Komplettour"' in dialog_source
+    assert 'display_value = "Ja" if str(value).strip().lower() in {"true", "1", "ja"} else "Nein"' in dialog_source
+
+
+def test_order_info_popup_displays_none_for_empty_filter_override() -> None:
+    page_source = (PAGES_DIR / "05_Reihenfolge.py").read_text(encoding="utf-8")
+    dialog_source = page_source[
+        page_source.index("def show_order_details("):
+        page_source.index("\n\nclass DynamicAntPath")
+    ]
+
+    assert 'elif column == "Filterübersteuerung" and not display_value.strip():' in dialog_source
+    assert 'display_value = "Keine"' in dialog_source
 
 
 def test_filter_page_persists_filter_widget_values() -> None:
